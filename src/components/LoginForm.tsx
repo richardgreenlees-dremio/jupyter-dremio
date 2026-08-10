@@ -2,8 +2,8 @@ import * as React from 'react';
 import { useState } from 'react';
 
 interface Props {
-  onLogin: (url: string, username: string, password: string) => void;
-  onSsoLogin: (url: string) => void;
+  onLogin: (url: string, username: string, password: string, useTls: boolean) => void;
+  onSsoLogin: (url: string, useTls: boolean) => void;
   error: string | null;
   direct: boolean;
 }
@@ -25,6 +25,7 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
   const [password, setPassword] = useState('');
   const [showCredentials, setShowCredentials] = useState(direct);
   const [busy, setBusy] = useState(false);
+  const [useTls, setUseTls] = useState(true);
 
   const handleSso = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,7 +34,7 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
     persist(LS_URL, cleanUrl);
     setBusy(true);
     try {
-      await onSsoLogin(cleanUrl);
+      await onSsoLogin(cleanUrl, useTls);
     } finally {
       setBusy(false);
     }
@@ -47,7 +48,7 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
     persist(LS_USERNAME, username.trim());
     setBusy(true);
     try {
-      await onLogin(cleanUrl, username.trim(), password);
+      await onLogin(cleanUrl, username.trim(), password, useTls);
     } finally {
       setBusy(false);
     }
@@ -138,6 +139,16 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
       )}
 
       {error && <div className="dremio-login-error">{error}</div>}
+
+      <label className="dremio-login-tls">
+        <input
+          type="checkbox"
+          checked={useTls}
+          onChange={e => setUseTls(e.target.checked)}
+          disabled={busy}
+        />
+        Use TLS
+      </label>
 
       {direct && (
         <div className="dremio-login-notice">

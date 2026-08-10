@@ -38,7 +38,7 @@
     "build:lib:prod": "tsc",
     "clean": "jlpm clean:lib && jlpm clean:labextension && jlpm clean:lintcache",
     "clean:lib": "node -e \"['lib','tsconfig.tsbuildinfo'].forEach(p=>{require('fs').rmSync(p,{recursive:true,force:true})})\"",
-    "clean:labextension": "node -e \"['jupyter_dremio/labextension','jupyter_dremio/_version.py'].forEach(p=>{try{require('fs').rmSync(p,{recursive:true,force:true})}catch(_){}})\"",
+    "clean:labextension": "node -e \"['jupyter_dremio/labextension'].forEach(p=>{try{require('fs').rmSync(p,{recursive:true,force:true})}catch(_){}})\"",
     "clean:lintcache": "node -e \"['.eslintcache','.stylelintcache'].forEach(p=>{try{require('fs').rmSync(p,{force:true})}catch(_){}})\"",
     "install:extension": "jlpm build:lib && jlpm build:labextension:dev",
     "lint": "jlpm eslint && jlpm stylelint && jlpm prettier:check",

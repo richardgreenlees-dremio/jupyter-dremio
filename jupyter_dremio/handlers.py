@@ -347,6 +347,22 @@ class WikiHandler(APIHandler):
             raise web.HTTPError(resp.status_code, resp.text)
         self.finish(resp.json())
 
+    @web.authenticated
+    def post(self, item_id: str):
+        dremio_url = _dremio_url(self)
+        token = _dremio_token(self)
+        encoded = urllib.parse.quote(item_id, safe="")
+        body = json.loads(self.request.body)
+        resp = requests.post(
+            f"{dremio_url}/api/v3/catalog/{encoded}/collaboration/wiki",
+            json=body,
+            headers={**_auth_header(token), "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if not resp.ok:
+            raise web.HTTPError(resp.status_code, resp.text)
+        self.finish(resp.json())
+
 
 class JobsHandler(APIHandler):
     @web.authenticated

@@ -1,8 +1,13 @@
 import * as React from 'react';
+import { useEffect, useState } from 'react';
+import { DremioCredentials, saveWiki } from '../api';
 
 interface Props {
   title: string;
   markdown: string;
+  itemId: string;
+  version?: number;
+  creds: DremioCredentials | null;
 }
 
 function escapeHtml(s: string): string {
@@ -109,17 +114,84 @@ function markdownToHtml(md: string): string {
   return html;
 }
 
-export function WikiViewer({ title, markdown }: Props): JSX.Element {
+export function WikiViewer({ title, markdown, itemId, version, creds }: Props): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(markdown);
+  const [savedMarkdown, setSavedMarkdown] = useState(markdown);
+  const [savedVersion, setSavedVersion] = useState(version);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEditing(false);
+    setDraft(markdown);
+    setSavedMarkdown(markdown);
+    setSavedVersion(version);
+    setError(null);
+  }, [itemId, markdown, version]);
+
+  const startEdit = () => {
+    setDraft(savedMarkdown);
+    setError(null);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setDraft(savedMarkdown);
+    setError(null);
+    setEditing(false);
+  };
+
+  const submitEdit = async () => {
+    if (!creds) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const saved = await saveWiki(creds, itemId, draft, savedVersion);
+      setSavedMarkdown(saved.text ?? draft);
+      setSavedVersion(saved.version);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="dremio-wiki">
       <div className="dremio-wiki-header">
         <span className="dremio-wiki-icon">📄</span>
         <span className="dremio-wiki-title">{title || 'Wiki'}</span>
+        {!editing && (
+          <button className="dremio-wiki-edit-btn" onClick={startEdit} title="Edit wiki" aria-label="Edit wiki">
+            ✏️
+          </button>
+        )}
       </div>
-      <div
-        className="dremio-wiki-content"
-        dangerouslySetInnerHTML={{ __html: markdownToHtml(markdown) }}
-      />
+      {editing ? (
+        <div className="dremio-wiki-editor">
+          <textarea
+            className="dremio-wiki-textarea"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            disabled={saving}
+            aria-label="Wiki Markdown"
+          />
+          {error && <div className="dremio-wiki-error">{error}</div>}
+          <div className="dremio-wiki-editor-actions">
+            <button onClick={cancelEdit} disabled={saving}>Cancel</button>
+            <button onClick={() => { void submitEdit(); }} disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div
+          className="dremio-wiki-content"
+          dangerouslySetInnerHTML={{ __html: markdownToHtml(savedMarkdown) }}
+        />
+      )}
     </div>
   );
 }

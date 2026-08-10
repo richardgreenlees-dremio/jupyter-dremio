@@ -19,7 +19,13 @@ import {
 type Mode = 'detecting' | 'proxy' | 'direct';
 
 interface Props {
-  onShowWiki: (name: string, markdown: string) => void;
+  onShowWiki: (
+    name: string,
+    markdown: string,
+    itemId: string,
+    version: number | undefined,
+    creds: DremioCredentials
+  ) => void;
   onShowJobs: (creds: DremioCredentials) => void;
   onNewNotebook: (creds: DremioCredentials, item: CatalogItem | null) => void;
 }
@@ -105,12 +111,12 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     }
   }, []);
 
-  const handleLogin = async (url: string, username: string, password: string) => {
+  const handleLogin = async (url: string, username: string, password: string, useTls: boolean) => {
     setLoginError(null);
     try {
       const direct = mode === 'direct';
       const resp = await login(url, username, password, direct);
-      const c: DremioCredentials = { url, token: resp.token, direct, username: resp.userName, password };
+      const c: DremioCredentials = { url, token: resp.token, direct, username: resp.userName, password, useTls };
       setCreds(c);
       await loadRoot(c);
     } catch (e) {
@@ -118,11 +124,11 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     }
   };
 
-  const handleSsoLogin = async (url: string) => {
+  const handleSsoLogin = async (url: string, useTls: boolean) => {
     setLoginError(null);
     try {
       const resp = await ssoLogin(url);
-      const c: DremioCredentials = { url, token: resp.token, direct: false, username: resp.userName };
+      const c: DremioCredentials = { url, token: resp.token, direct: false, username: resp.userName, useTls };
       setCreds(c);
       await loadRoot(c);
     } catch (e) {
@@ -170,9 +176,9 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
       const name = item.path[item.path.length - 1] ?? item.id;
       try {
         const wiki = await fetchWiki(creds, item.id);
-        onShowWiki(name, wiki.text ?? '');
+        onShowWiki(name, wiki.text ?? '', item.id, wiki.version, creds);
       } catch {
-        onShowWiki(name, '_Wiki could not be loaded for this item._');
+        onShowWiki(name, '_Wiki could not be loaded for this item._', item.id, undefined, creds);
       }
     },
     [creds, onShowWiki]

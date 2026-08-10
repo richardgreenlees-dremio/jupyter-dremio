@@ -20,12 +20,24 @@ const PANEL_ID = 'jupyter-dremio:panel';
 const COMMAND_OPEN = 'jupyter-dremio:open';
 
 class DremioWidget extends Widget {
-  private _showWiki: (name: string, markdown: string) => void;
+  private _showWiki: (
+    name: string,
+    markdown: string,
+    itemId: string,
+    version: number | undefined,
+    creds: DremioCredentials
+  ) => void;
   private _showJobs: (creds: DremioCredentials) => void;
   private _newNotebook: (creds: DremioCredentials, item: CatalogItem | null) => void;
 
   constructor(
-    showWiki: (name: string, markdown: string) => void,
+    showWiki: (
+      name: string,
+      markdown: string,
+      itemId: string,
+      version: number | undefined,
+      creds: DremioCredentials
+    ) => void,
     showJobs: (creds: DremioCredentials) => void,
     newNotebook: (creds: DremioCredentials, item: CatalogItem | null) => void
   ) {
@@ -75,13 +87,19 @@ const plugin: JupyterFrontEndPlugin<void> = {
     });
 
     /** Open or update the singleton wiki panel in the main area. */
-    const showWiki = (name: string, markdown: string) => {
+    const showWiki = (
+      name: string,
+      markdown: string,
+      itemId: string,
+      version: number | undefined,
+      creds: DremioCredentials
+    ) => {
       let wikiWidget = wikiTracker.find(w => !w.isDisposed);
       if (!wikiWidget) {
         wikiWidget = new WikiWidget();
         void wikiTracker.add(wikiWidget);
       }
-      wikiWidget.setContent(name, markdown);
+      wikiWidget.setContent(name, markdown, itemId, version, creds);
       if (!wikiWidget.isAttached) {
         app.shell.add(wikiWidget, 'main');
       }
@@ -106,7 +124,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
     /** Create a new notebook pre-wired to the current Dremio session. */
     const newNotebook = async (creds: DremioCredentials, selectedItem: CatalogItem | null) => {
       const hostname = new URL(creds.url).hostname;
-      const flightUrl = `grpc+tls://${hostname}:32010`;
+      const flightUrl = `${creds.useTls ? 'grpc+tls' : 'grpc+tcp'}://${hostname}:32010`;
 
       // Escape any double-quotes or backslashes that appear in credentials.
       const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -129,6 +147,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         `        "password": os.environ.get("_DREMIO_PWD", ""),\n` +
         `        "adbc.flight.sql.rpc.with_cookie_middleware": "true",\n` +
         `    },\n` +
+        `    autocommit=True,\n` +
         `)\n` +
         `\n` +
         `%load_ext sql\n` +

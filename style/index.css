@@ -775,6 +775,53 @@
   color: var(--jp-ui-font-color0, #111);
 }
 
+.dremio-wiki-edit-btn {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.dremio-wiki-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dremio-wiki-textarea {
+  min-height: 360px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid var(--jp-border-color1, #d0d0d0);
+  border-radius: 4px;
+  background: var(--jp-input-background, #fff);
+  color: var(--jp-content-font-color1, #212121);
+  font-family: var(--jp-code-font-family, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.dremio-wiki-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dremio-wiki-error {
+  color: var(--jp-error-color1, #c62828);
+}
+
+.dremio-login-tls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-family: var(--jp-ui-font-family, sans-serif);
+  font-size: 13px;
+  color: var(--jp-ui-font-color1, #333);
+}
+
 /* Rendered markdown content */
 .dremio-wiki-content h1,
 .dremio-wiki-content h2,

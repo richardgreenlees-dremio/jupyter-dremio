@@ -13,6 +13,8 @@ export interface DremioCredentials {
   username?: string;
   /** kept in memory for the session lifetime so notebooks can be pre-wired */
   password?: string;
+  /** Use TLS when creating an Arrow Flight SQL connection. */
+  useTls: boolean;
 }
 
 export type CatalogEntityType = 'CONTAINER' | 'DATASET' | 'FILE';
@@ -284,6 +286,32 @@ export async function fetchWiki(
   return response.json();
 }
 
+export async function saveWiki(
+  creds: DremioCredentials,
+  id: string,
+  text: string,
+  version?: number
+): Promise<WikiContent> {
+  const body: Record<string, unknown> = { text };
+  if (version != null) body.version = version;
+
+  if (creds.direct) {
+    return directRequest(
+      `${creds.url}/api/v3/catalog/${encodeURIComponent(id)}/collaboration/wiki`,
+      {
+        method: 'POST',
+        headers: { ...directAuthHeader(creds.token), 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }
+    );
+  }
+  return proxyRequest(`dremio/wiki/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: proxyHeaders(creds),
+    body: JSON.stringify(body),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
@@ -519,7 +547,7 @@ export async function saveTags(
   version?: string
 ): Promise<TagsContent> {
   const body: Record<string, unknown> = {
-    tags: tags.map(t => ({ name: t })),
+    tags,
   };
   if (version != null) body.version = version;
 
