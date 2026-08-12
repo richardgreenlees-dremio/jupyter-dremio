@@ -19,7 +19,7 @@ export interface DremioCredentials {
 
 export type CatalogEntityType = 'CONTAINER' | 'DATASET' | 'FILE';
 export type ContainerSubType = 'SPACE' | 'SOURCE' | 'FOLDER' | 'HOME';
-export type DatasetSubType = 'VIRTUAL_DATASET' | 'PHYSICAL_DATASET';
+export type DatasetSubType = 'VIRTUAL_DATASET' | 'PHYSICAL_DATASET' | 'PROMOTED';
 
 export interface ColumnField {
   name: string;
@@ -36,6 +36,7 @@ export interface CatalogItem {
   datasetType?: DatasetSubType;
   children?: CatalogItem[];
   fields?: ColumnField[];
+  format?: { isFolder?: boolean };
 }
 
 export interface CatalogRoot {
@@ -364,25 +365,157 @@ export async function fetchJobs(
   });
 }
 
-export async function promoteToParquet(
+export interface TextDatasetFormat {
+  fieldDelimiter: string;
+  lineDelimiter: string;
+  quote: string;
+  escape: string;
+  extractHeader: boolean;
+  skipFirstLine: boolean;
+  trimHeader: boolean;
+}
+
+interface FileFormatResponse {
+  fileFormat?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+type FormatTarget = 'file' | 'folder';
+
+function fileFormatEndpoint(item: CatalogItem, target: FormatTarget): string {
+  if (item.path.length < 2) {
+    throw new Error('A source file path is required to register a text dataset.');
+  }
+  const [source, ...filePath] = item.path;
+  return `source/${encodeURIComponent(source)}/${target}_format/${filePath.map(encodeURIComponent).join('/')}`;
+}
+
+async function fetchFileFormat(
   creds: DremioCredentials,
-  item: CatalogItem
-): Promise<CatalogItem> {
-  const body = {
-    entityType: 'dataset',
-    id: item.id,
-    path: item.path,
-    type: 'PHYSICAL_DATASET',
-    format: { type: 'Parquet' },
-  };
+  item: CatalogItem,
+  target: FormatTarget
+): Promise<FileFormatResponse> {
+  const endpoint = fileFormatEndpoint(item, target);
   if (creds.direct) {
-    return directRequest(`${creds.url}/api/v3/catalog/${encodeURIComponent(item.id)}`, {
+    return directRequest(`${creds.url}/apiv2/${endpoint}`, {
+      headers: directAuthHeader(creds.token),
+    });
+  }
+  return proxyRequest(`dremio/${target}-format/${item.path.map(encodeURIComponent).join('/')}`, {
+    method: 'GET',
+    headers: proxyHeaders(creds),
+  });
+}
+
+export async function fetchFormatStatus(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  isFolder: boolean
+): Promise<boolean> {
+  const response = await fetchFileFormat(creds, item, isFolder ? 'folder' : 'file');
+  const format = response.fileFormat ?? response;
+  return typeof format.version === 'string' && format.version.length > 0;
+}
+
+async function promoteToSimpleFileDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  type: 'Parquet' | 'Iceberg',
+  target: FormatTarget
+): Promise<CatalogItem> {
+  const current = await fetchFileFormat(creds, item, target);
+  const body = { ...(current.fileFormat ?? current), type };
+  const endpoint = fileFormatEndpoint(item, target);
+  if (creds.direct) {
+    return directRequest(`${creds.url}/apiv2/${endpoint}`, {
       method: 'PUT',
       headers: { ...directAuthHeader(creds.token), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   }
-  return proxyRequest(`dremio/catalog/${encodeURIComponent(item.id)}`, {
+  return proxyRequest(`dremio/${target}-format/${item.path.map(encodeURIComponent).join('/')}`, {
+    method: 'PUT',
+    headers: proxyHeaders(creds),
+    body: JSON.stringify(body),
+  });
+}
+
+export function promoteToParquetDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  isFolder = false
+): Promise<CatalogItem> {
+  return promoteToSimpleFileDataset(creds, item, 'Parquet', isFolder ? 'folder' : 'file');
+}
+
+export function promoteToIcebergDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  isFolder = false
+): Promise<CatalogItem> {
+  return promoteToSimpleFileDataset(creds, item, 'Iceberg', isFolder ? 'folder' : 'file');
+}
+
+export async function promoteToTextDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  format: TextDatasetFormat,
+  isFolder = false
+): Promise<CatalogItem> {
+  // Raw files use Dremio's v2 source file-format endpoint, not Catalog v3.
+  // Preserve Dremio's current location and version fields from its format.
+  const target: FormatTarget = isFolder ? 'folder' : 'file';
+  const current = await fetchFileFormat(creds, item, target);
+  const currentFormat = current.fileFormat ?? current;
+  const body = {
+    ...currentFormat,
+    type: 'Text',
+    ...format,
+  };
+  const endpoint = fileFormatEndpoint(item, target);
+  if (creds.direct) {
+    return directRequest(`${creds.url}/apiv2/${endpoint}`, {
+      method: 'PUT',
+      headers: { ...directAuthHeader(creds.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  return proxyRequest(`dremio/${target}-format/${item.path.map(encodeURIComponent).join('/')}`, {
+    method: 'PUT',
+    headers: proxyHeaders(creds),
+    body: JSON.stringify(body),
+  });
+}
+
+export interface ExcelDatasetFormat {
+  sheetName: string;
+  extractHeader: boolean;
+  hasMergedCells: boolean;
+}
+
+export async function promoteToExcelDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  format: ExcelDatasetFormat,
+  isFolder = false
+): Promise<CatalogItem> {
+  const target: FormatTarget = isFolder ? 'folder' : 'file';
+  const current = await fetchFileFormat(creds, item, target);
+  const currentFormat = current.fileFormat ?? current;
+  const body = {
+    ...currentFormat,
+    type: 'Excel',
+    ...format,
+  };
+  const endpoint = fileFormatEndpoint(item, target);
+  if (creds.direct) {
+    return directRequest(`${creds.url}/apiv2/${endpoint}`, {
+      method: 'PUT',
+      headers: { ...directAuthHeader(creds.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+  return proxyRequest(`dremio/${target}-format/${item.path.map(encodeURIComponent).join('/')}`, {
     method: 'PUT',
     headers: proxyHeaders(creds),
     body: JSON.stringify(body),
@@ -601,7 +734,7 @@ export function itemIcon(item: CatalogItem): string {
     case 'HOME':             return '🏠';
     case 'SPACE':            return '📦';
     case 'SOURCE':           return '🗄️';
-    case 'FOLDER':           return '📁';
+    case 'FOLDER':           return (isDataset(item)) ? '🗃️' : '📁';
     case 'VIRTUAL_DATASET':  return '👁️';
     case 'PHYSICAL_DATASET': return '🗃️';
     default:                 return '📄';

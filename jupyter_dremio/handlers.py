@@ -230,6 +230,56 @@ class CatalogItemHandler(APIHandler):
         self.finish()
 
 
+def _file_format_url(dremio_url: str, encoded_path: str, target: str) -> str:
+    """Build a source file-format endpoint from a catalog path."""
+    segments = [urllib.parse.unquote(segment) for segment in encoded_path.split("/")]
+    if len(segments) < 2:
+        raise web.HTTPError(400, "A source file path is required")
+    source, *file_path = segments
+    encoded_file_path = "/".join(urllib.parse.quote(segment, safe="") for segment in file_path)
+    return (
+        f"{dremio_url}/apiv2/source/{urllib.parse.quote(source, safe='')}"
+        f"/{target}_format/{encoded_file_path}"
+    )
+
+
+class FileFormatHandler(APIHandler):
+    def _finish_error(self, resp: requests.Response) -> None:
+        """Preserve Dremio's file-format diagnostic instead of masking 500s."""
+        self.set_status(resp.status_code)
+        self.finish({"message": resp.text or "Dremio returned no error details"})
+
+    @web.authenticated
+    def get(self, target: str, path: str):
+        dremio_url = _dremio_url(self)
+        token = _dremio_token(self)
+        resp = requests.get(
+            _file_format_url(dremio_url, path, target),
+            headers=_auth_header(token),
+            timeout=30,
+        )
+        if not resp.ok:
+            self._finish_error(resp)
+            return
+        self.finish(resp.json())
+
+    @web.authenticated
+    def put(self, target: str, path: str):
+        dremio_url = _dremio_url(self)
+        token = _dremio_token(self)
+        body = json.loads(self.request.body)
+        resp = requests.put(
+            _file_format_url(dremio_url, path, target),
+            json=body,
+            headers={**_auth_header(token), "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if not resp.ok:
+            self._finish_error(resp)
+            return
+        self.finish(resp.json())
+
+
 class SearchHandler(APIHandler):
     @web.authenticated
     def get(self):
@@ -414,6 +464,7 @@ def setup_handlers(web_app):
         (f"{base}/dremio/sso-logout", SsoLogoutHandler),
         (f"{base}/dremio/catalog/folder", FolderHandler),
         (f"{base}/dremio/catalog/search", SearchHandler),
+        (f"{base}/dremio/(file|folder)-format/(.+)", FileFormatHandler),
         (f"{base}/dremio/tags/(.+)", TagsHandler),
         (f"{base}/dremio/wiki/(.+)", WikiHandler),
         (f"{base}/dremio/jobs", JobsHandler),

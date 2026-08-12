@@ -1,12 +1,11 @@
 import * as React from 'react';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   DremioCredentials,
   CatalogItem,
   ColumnField,
   fetchCatalogItem,
   deleteCatalogItem,
-  promoteToParquet,
   isContainer,
   isDataset,
   isFile,
@@ -15,6 +14,7 @@ import {
 } from '../api';
 import { ContextMenu } from './ContextMenu';
 import { TagEditor } from './TagEditor';
+import { RegisterDatasetDialog } from './RegisterDatasetDialog';
 
 interface Props {
   item: CatalogItem;
@@ -24,6 +24,11 @@ interface Props {
   onSelect: (item: CatalogItem) => void;
   onOpenWiki: (item: CatalogItem) => void;
   onDeleteItem: (id: string) => void;
+  onCatalogChanged: () => Promise<void>;
+  catalogRevision: number;
+  expanded: boolean;
+  expandedIds: ReadonlySet<string>;
+  onExpandedChange: (id: string, expanded: boolean) => void;
 }
 
 function IconTable(): JSX.Element {
@@ -34,15 +39,6 @@ function IconTable(): JSX.Element {
       <line x1="1" y1="9" x2="15" y2="9"/>
       <line x1="1" y1="13" x2="15" y2="13"/>
       <line x1="5" y1="1" x2="5" y2="15"/>
-    </svg>
-  );
-}
-
-function IconView(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
-      <ellipse cx="8" cy="8" rx="7" ry="4.5"/>
-      <circle cx="8" cy="8" r="2"/>
     </svg>
   );
 }
@@ -80,10 +76,8 @@ function getDeleteLabel(item: CatalogItem, resolvedType?: string | null): string
   return null;
 }
 
-function nodeIcon(item: CatalogItem): JSX.Element | string {
-  const sub = item.containerType ?? item.datasetType ?? item.type;
-  if (sub === 'PHYSICAL_DATASET') return <IconTable />;
-  if (sub === 'VIRTUAL_DATASET') return <IconView />;
+function nodeIcon(item: CatalogItem, detailType?: string | null): JSX.Element | string {
+  if (item.datasetType === 'PROMOTED') return <IconTable />;
   return itemIcon(item);
 }
 
@@ -95,8 +89,12 @@ export function CatalogNode({
   onSelect,
   onOpenWiki,
   onDeleteItem,
+  onCatalogChanged,
+  catalogRevision,
+  expanded,
+  expandedIds,
+  onExpandedChange,
 }: Props): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<CatalogItem[]>([]);
   const [fields, setFields] = useState<ColumnField[]>([]);
   // Sub-type resolved from the full-detail fetch (may not be in listing items)
@@ -105,11 +103,14 @@ export function CatalogNode({
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [showTagEditor, setShowTagEditor] = useState(false);
+  const [showRegisterDataset, setShowRegisterDataset] = useState(false);
+  const [registerFormat, setRegisterFormat] = useState<'Text (Delimited)' | 'JSON' | 'Parquet' | 'Excel' | 'Iceberg' | undefined>(undefined);
 
   const displayName = item.path[item.path.length - 1] ?? item.id;
   const container = isContainer(item);
   const dataset = isDataset(item);
   const file = isFile(item);
+  const folder = item.containerType === 'FOLDER' || item.type === 'FOLDER' || detailType === 'FOLDER';
   const expandable = container || dataset;
   const isSelected = selected === item.id;
   const sqlPath = buildSqlPath(item.path);
@@ -136,19 +137,25 @@ export function CatalogNode({
     }
   }, [creds, item.id, dataset]);
 
+  useEffect(() => {
+    if (catalogRevision > 0 && expanded) {
+      void loadChildren();
+    }
+  }, [catalogRevision, expanded, loadChildren]);
+
   const handleToggle = async () => {
     if (!expandable) return;
     const needsLoad = dataset ? fields.length === 0 : children.length === 0;
     if (!expanded && needsLoad) {
       await loadChildren();
     }
-    setExpanded(prev => !prev);
+    onExpandedChange(item.id, !expanded);
   };
 
   const handleRefresh = async (e: React.MouseEvent) => {
     e.stopPropagation();
     await loadChildren();
-    setExpanded(true);
+    onExpandedChange(item.id, true);
   };
 
   const handleClick = (e: React.MouseEvent) => {
@@ -193,18 +200,30 @@ export function CatalogNode({
     try {
       await deleteCatalogItem(creds, item.id);
       onDeleteItem(item.id);
+      await onCatalogChanged();
     } catch (e) {
       alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
-  const handlePromote = async () => {
-    if (!window.confirm(`Register "${displayName}" as a Parquet physical dataset?`)) return;
-    try {
-      await promoteToParquet(creds, item);
-    } catch (e) {
-      alert(`Promote failed: ${e instanceof Error ? e.message : String(e)}`);
+  const handleRegisterDataset = async () => {
+    if (folder) {
+      try {
+        const detail = await fetchCatalogItem(creds, item.id);
+        const names = (detail.children ?? []).map(child => child.path[child.path.length - 1]?.toLowerCase() ?? '');
+        if (names.includes('metadata')) setRegisterFormat('Iceberg');
+        else if (names.some(name => name.endsWith('.parquet'))) setRegisterFormat('Parquet');
+        else if (names.some(name => name.endsWith('.json'))) setRegisterFormat('JSON');
+        else if (names.some(name => name.endsWith('.xlsx') || name.endsWith('.xls'))) setRegisterFormat('Excel');
+        else setRegisterFormat('Text (Delimited)');
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+    } else {
+      setRegisterFormat(undefined);
     }
+    setShowRegisterDataset(true);
   };
 
   return (
@@ -224,7 +243,7 @@ export function CatalogNode({
           </span>
         )}
         {!expandable && <span className="dremio-chevron dremio-chevron--leaf" />}
-        <span className="dremio-node-icon">{nodeIcon(item)}</span>
+        <span className="dremio-node-icon">{nodeIcon(item, detailType)}</span>
         <span className="dremio-node-label">{displayName}</span>
         {container && (
           <button className="dremio-refresh-btn" onClick={handleRefresh} title="Refresh">
@@ -254,17 +273,17 @@ export function CatalogNode({
               label: 'Edit tags',
               onClick: () => setShowTagEditor(true),
             },
-            ...(file ? [{
+            ...(file || folder ? [{
               icon: '🗂️',
-              label: 'Register as Parquet table',
-              onClick: () => { void handlePromote(); },
+              label: 'Register as Dataset',
+              onClick: () => { void handleRegisterDataset(); },
               separator: true,
             }] : []),
             ...(deleteLabel ? [{
               icon: '🗑️',
               label: deleteLabel,
               onClick: () => { void handleDelete(); },
-              separator: !file,
+              separator: !(file || folder),
               danger: true,
             }] : []),
           ]}
@@ -273,6 +292,9 @@ export function CatalogNode({
 
       {showTagEditor && (
         <TagEditor item={item} creds={creds} onClose={() => setShowTagEditor(false)} />
+      )}
+      {showRegisterDataset && (
+        <RegisterDatasetDialog item={item} creds={creds} isFolder={folder} initialFormat={registerFormat} onPromoted={onCatalogChanged} onClose={() => setShowRegisterDataset(false)} />
       )}
 
       {error && (
@@ -321,6 +343,11 @@ export function CatalogNode({
               onSelect={onSelect}
               onOpenWiki={onOpenWiki}
               onDeleteItem={id => setChildren(prev => prev.filter(c => c.id !== id))}
+              onCatalogChanged={onCatalogChanged}
+              catalogRevision={catalogRevision}
+              expanded={expandedIds.has(child.id)}
+              expandedIds={expandedIds}
+              onExpandedChange={onExpandedChange}
             />
           ))}
         </div>

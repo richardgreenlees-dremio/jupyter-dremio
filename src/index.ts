@@ -141,7 +141,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         `# Credentials were injected into this kernel at notebook creation.\n` +
         `# Re-open via the Dremio sidebar button if the kernel restarts.\n` +
         `dremio_conn = dbapi.connect(\n` +
-        `    "${flightUrl}",\n` +
+        `    os.environ.get("_DREMIO_FLIGHT_URL", ""),\n` +
         `    db_kwargs={\n` +
         `        "username": os.environ.get("_DREMIO_USER", ""),\n` +
         `        "password": os.environ.get("_DREMIO_PWD", ""),\n` +
@@ -245,6 +245,7 @@ const plugin: JupyterFrontEndPlugin<void> = {
         const injections: string[] = ['import os'];
         if (creds.username) injections.push(`os.environ["_DREMIO_USER"] = "${esc(creds.username)}"`);
         if (creds.password) injections.push(`os.environ["_DREMIO_PWD"] = "${esc(creds.password)}"`);
+        if (flightUrl) injections.push(`os.environ["_DREMIO_FLIGHT_URL"] = "${esc(flightUrl)}"`);
         kernel.requestExecute({
           code: injections.join('; '),
           silent: true,

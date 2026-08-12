@@ -37,6 +37,8 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
   const [rootItems, setRootItems] = useState<CatalogItem[]>([]);
   const [rootLoading, setRootLoading] = useState(false);
   const [rootError, setRootError] = useState<string | null>(null);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [selectedItem, setSelectedItem] = useState<CatalogItem | null>(null);
 
   // Search state
@@ -94,9 +96,18 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
         setSearchDiag(null);
       })
       .finally(() => setSearchLoading(false));
-  }, [creds, activeQuery]);
+  }, [creds, activeQuery, catalogRevision]);
 
   const selected = selectedItem?.id ?? null;
+
+  const handleExpandedChange = useCallback((id: string, expanded: boolean) => {
+    setExpandedIds(previous => {
+      const next = new Set(previous);
+      if (expanded) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
 
   const loadRoot = useCallback(async (c: DremioCredentials) => {
     setRootLoading(true);
@@ -104,6 +115,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     try {
       const data = await fetchRootCatalog(c);
       setRootItems(data.data ?? []);
+      setCatalogRevision(revision => revision + 1);
     } catch (e) {
       setRootError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -142,6 +154,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     }
     setCreds(null);
     setRootItems([]);
+    setExpandedIds(new Set());
     setSelectedItem(null);
     setLoginError(null);
     setSearchQuery('');
@@ -151,8 +164,8 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     setSearchDiag(null);
   };
 
-  const handleRefreshRoot = useCallback(() => {
-    if (creds) loadRoot(creds);
+  const handleRefreshRoot = useCallback(async () => {
+    if (creds) await loadRoot(creds);
   }, [creds, loadRoot]);
 
   const handleCreateFolder = useCallback(async () => {
@@ -295,6 +308,11 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
                     onSelect={setSelectedItem}
                     onOpenWiki={handleOpenWiki}
                     onDeleteItem={id => setSearchResults(prev => prev.filter(i => i.id !== id))}
+                    onCatalogChanged={handleRefreshRoot}
+                    catalogRevision={catalogRevision}
+                    expanded={expandedIds.has(item.id)}
+                    expandedIds={expandedIds}
+                    onExpandedChange={handleExpandedChange}
                   />
                 ))}
               </div>
@@ -323,6 +341,11 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
                 setRootItems(prev => prev.filter(i => i.id !== id));
                 if (selectedItem?.id === id) setSelectedItem(null);
               }}
+              onCatalogChanged={handleRefreshRoot}
+              catalogRevision={catalogRevision}
+              expanded={expandedIds.has(item.id)}
+              expandedIds={expandedIds}
+              onExpandedChange={handleExpandedChange}
             />
           ))}
         {!rootLoading && !rootError && rootItems.length === 0 && (
