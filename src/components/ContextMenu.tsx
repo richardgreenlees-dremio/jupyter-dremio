@@ -18,7 +18,7 @@ interface Props {
   onClose: () => void;
 }
 
-function ContextMenuInner({ x, y, items, onClose }: Props): JSX.Element {
+export function ContextMenu({ x, y, items, onClose }: Props): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -39,7 +39,7 @@ function ContextMenuInner({ x, y, items, onClose }: Props): JSX.Element {
     };
   }, [onClose]);
 
-  return (
+  return ReactDOM.createPortal(
     <div
       ref={ref}
       className="dremio-context-menu"
@@ -68,13 +68,7 @@ function ContextMenuInner({ x, y, items, onClose }: Props): JSX.Element {
           </button>
         </React.Fragment>
       ))}
-    </div>
-  );
-}
-
-export function ContextMenu(props: Props): JSX.Element {
-  return ReactDOM.createPortal(
-    <ContextMenuInner {...props} />,
+    </div>,
     document.body
   );
 }

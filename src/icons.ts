@@ -1,21 +1,13 @@
 import { LabIcon } from '@jupyterlab/ui-components';
 
-const tableGridSvgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
-  <rect x="2" y="2" width="20" height="20" rx="2" ry="2"
-        fill="none" stroke="var(--jp-icon-contrast-color0, #616161)" stroke-width="2"/>
-  <line x1="2"  y1="8"  x2="22" y2="8"
-        stroke="var(--jp-icon-contrast-color0, #616161)" stroke-width="1.5"/>
-  <line x1="2"  y1="14" x2="22" y2="14"
-        stroke="var(--jp-icon-contrast-color0, #616161)" stroke-width="1.5"/>
-  <line x1="8"  y1="8"  x2="8"  y2="22"
-        stroke="var(--jp-icon-contrast-color0, #616161)" stroke-width="1.5"/>
-  <line x1="16" y1="8"  x2="16" y2="22"
-        stroke="var(--jp-icon-contrast-color0, #616161)" stroke-width="1.5"/>
-  <rect x="2" y="2" width="20" height="6" rx="1"
-        fill="var(--jp-icon-contrast-color0, #616161)" opacity="0.15"/>
+// Official Gnarly image from https://www.dremio.com/wp-content/uploads/2024/05/gnarly.png
+const gnarlyPng = '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';
+
+const gnarlySvgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16">
+  <image href="data:image/png;base64,${gnarlyPng}" width="24" height="24" preserveAspectRatio="xMidYMid meet" />
 </svg>`;
 
 export const dremioIcon = new LabIcon({
   name: 'jupyter-dremio:catalog',
-  svgstr: tableGridSvgStr,
+  svgstr: gnarlySvgStr,
 });

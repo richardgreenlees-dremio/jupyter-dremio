@@ -11,7 +11,7 @@ interface Props {
   onClose: () => void;
 }
 
-function TagEditorInner({ item, creds, onClose }: Props): JSX.Element {
+export function TagEditor({ item, creds, onClose }: Props): JSX.Element {
   const name = item.path[item.path.length - 1] ?? item.id;
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -85,7 +85,7 @@ function TagEditorInner({ item, creds, onClose }: Props): JSX.Element {
     if (e.target === e.currentTarget) onClose();
   };
 
-  return (
+  return ReactDOM.createPortal(
     <div className="dremio-tag-overlay" onClick={handleOverlayClick}>
       <div className="dremio-tag-dialog">
         <div className="dremio-tag-header">
@@ -166,10 +166,7 @@ function TagEditorInner({ item, creds, onClose }: Props): JSX.Element {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
-}
-
-export function TagEditor(props: Props): JSX.Element {
-  return ReactDOM.createPortal(<TagEditorInner {...props} />, document.body);
 }

@@ -5,6 +5,7 @@ import { Toolbar } from './Toolbar';
 import { CatalogNode } from './CatalogNode';
 import {
   DremioCredentials,
+  DremioCloudRegion,
   CatalogItem,
   login,
   ssoLogin,
@@ -14,6 +15,7 @@ import {
   fetchCatalogSearch,
   createFolder,
   detectServerExtension,
+  exchangeCloudPat,
 } from '../api';
 
 type Mode = 'detecting' | 'proxy' | 'direct';
@@ -148,6 +150,32 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     }
   };
 
+  const handleCloudLogin = async (
+    environment: 'cloud-gen1' | 'cloud-gen2',
+    projectId: string,
+    token: string,
+    region: DremioCloudRegion
+  ) => {
+    setLoginError(null);
+    try {
+      const cloudRegion = region;
+      const accessToken = await exchangeCloudPat(token, cloudRegion);
+      const c: DremioCredentials = {
+        url: cloudRegion === 'eu' ? 'https://api.eu.dremio.cloud' : 'https://api.dremio.cloud',
+        token: accessToken,
+        direct: true,
+        useTls: true,
+        environment,
+        projectId,
+        cloudRegion,
+      };
+      setCreds(c);
+      await loadRoot(c);
+    } catch (e) {
+      setLoginError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleLogout = () => {
     if (creds?.token.startsWith('__sso__')) {
       ssoLogout(creds.url).catch(() => undefined);
@@ -220,6 +248,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
       <LoginForm
         onLogin={handleLogin}
         onSsoLogin={handleSsoLogin}
+        onCloudLogin={handleCloudLogin}
         error={loginError}
         direct={mode === 'direct'}
       />
@@ -232,7 +261,6 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     <div className="dremio-panel">
       <Toolbar
         creds={creds}
-        selected={selected}
         selectedItem={selectedItem}
         onRefreshRoot={handleRefreshRoot}
         onLogout={handleLogout}

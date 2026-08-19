@@ -3,7 +3,6 @@ import { DremioCredentials, CatalogItem, buildSqlPath } from '../api';
 
 interface Props {
   creds: DremioCredentials;
-  selected: string | null;
   selectedItem: CatalogItem | null;
   onRefreshRoot: () => void;
   onLogout: () => void;
@@ -55,7 +54,6 @@ function IconSignOut(): JSX.Element {
 
 export function Toolbar({
   creds,
-  selected,
   selectedItem,
   onRefreshRoot,
   onLogout,
@@ -63,11 +61,6 @@ export function Toolbar({
   onShowJobs,
   onNewNotebook,
 }: Props): JSX.Element {
-  const copySelected = () => {
-    if (!selectedItem) return;
-    void navigator.clipboard.writeText(buildSqlPath(selectedItem.path));
-  };
-
   const canCreateFolder =
     selectedItem?.containerType === 'SPACE' || selectedItem?.containerType === 'FOLDER';
 
@@ -100,10 +93,10 @@ export function Toolbar({
         <IconNotebook />
       </button>
 
-      {selected && selectedItem && (
+      {selectedItem && (
         <button
           className="dremio-toolbar-btn"
-          onClick={copySelected}
+          onClick={() => void navigator.clipboard.writeText(buildSqlPath(selectedItem.path))}
           title={`Copy path: ${buildSqlPath(selectedItem.path)}`}
           aria-label="Copy selected path"
         >

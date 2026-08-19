@@ -50,6 +50,51 @@ class LoginHandler(APIHandler):
         self.finish(resp.json())
 
 
+class CloudLoginHandler(APIHandler):
+    """Exchange a Dremio Cloud PAT server-side to avoid browser CORS restrictions."""
+
+    @web.authenticated
+    def post(self):
+        try:
+            body = json.loads(self.request.body)
+        except json.JSONDecodeError as exc:
+            raise web.HTTPError(400, "Invalid JSON request body") from exc
+
+        pat = body.get("pat", "").removeprefix("Bearer ").strip()
+        if not pat:
+            raise web.HTTPError(400, "Missing Dremio Cloud PAT")
+
+        region = body.get("region", "us")
+        login_url = {
+            "us": "https://login.dremio.cloud/oauth/token",
+            "eu": "https://login.eu.dremio.cloud/oauth/token",
+        }.get(region)
+        if not login_url:
+            raise web.HTTPError(400, "Invalid Dremio Cloud control plane region")
+
+        try:
+            resp = requests.post(
+                login_url,
+                data={
+                    "subject_token": pat,
+                    "subject_token_type": "urn:ietf:params:oauth:token-type:dremio:personal-access-token",
+                    "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                    "scope": "dremio.all",
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            raise web.HTTPError(503, f"Cannot reach Dremio Cloud login: {exc}") from exc
+
+        if not resp.ok:
+            raise web.HTTPError(resp.status_code, resp.text)
+
+        token = resp.json().get("access_token")
+        if not token:
+            raise web.HTTPError(502, "Dremio Cloud token exchange returned no access token")
+        self.finish({"token": token})
+
+
 class SsoLoginHandler(APIHandler):
     @web.authenticated
     def post(self):
@@ -460,6 +505,7 @@ def setup_handlers(web_app):
     base = web_app.settings["base_url"].rstrip("/")
     handlers = [
         (f"{base}/dremio/login", LoginHandler),
+        (f"{base}/dremio/cloud/login", CloudLoginHandler),
         (f"{base}/dremio/sso-login", SsoLoginHandler),
         (f"{base}/dremio/sso-logout", SsoLogoutHandler),
         (f"{base}/dremio/catalog/folder", FolderHandler),

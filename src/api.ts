@@ -5,6 +5,9 @@ import { ServerConnection } from '@jupyterlab/services';
 // Types
 // ---------------------------------------------------------------------------
 
+export type DremioEnvironment = 'software' | 'cloud-gen1' | 'cloud-gen2';
+export type DremioCloudRegion = 'us' | 'eu';
+
 export interface DremioCredentials {
   url: string;
   token: string;
@@ -15,6 +18,11 @@ export interface DremioCredentials {
   password?: string;
   /** Use TLS when creating an Arrow Flight SQL connection. */
   useTls: boolean;
+  environment?: DremioEnvironment;
+  /** Required by Dremio Cloud REST APIs. */
+  projectId?: string;
+  /** Dremio Cloud control plane. */
+  cloudRegion?: DremioCloudRegion;
 }
 
 export type CatalogEntityType = 'CONTAINER' | 'DATASET' | 'FILE';
@@ -103,6 +111,25 @@ function directAuthHeader(token: string): Record<string, string> {
   return { Authorization: `_dremio${token}` };
 }
 
+interface CloudLoginResponse {
+  token: string;
+}
+
+function isCloud(creds: DremioCredentials): boolean {
+  return creds.environment === 'cloud-gen1' || creds.environment === 'cloud-gen2';
+}
+
+function cloudApiUrl(creds: DremioCredentials, path: string): string {
+  if (!creds.projectId) throw new Error('A Dremio Cloud Project ID is required.');
+  return `${creds.url.replace(/\/$/, '')}/v0/projects/${encodeURIComponent(creds.projectId)}/${path}`;
+}
+
+function requestAuthHeader(creds: DremioCredentials): Record<string, string> {
+  return isCloud(creds)
+    ? { Authorization: `Bearer ${creds.token}` }
+    : directAuthHeader(creds.token);
+}
+
 async function directRequest(url: string, init: RequestInit): Promise<any> {
   const resp = await fetch(url, init);
   if (!resp.ok) {
@@ -178,6 +205,9 @@ export async function ssoLogout(dremioUrl: string): Promise<void> {
 }
 
 export async function fetchRootCatalog(creds: DremioCredentials): Promise<CatalogRoot> {
+  if (isCloud(creds)) {
+    return directRequest(cloudApiUrl(creds, 'catalog'), { headers: requestAuthHeader(creds) });
+  }
   if (creds.direct) {
     return directRequest(`${creds.url}/api/v3/catalog`, {
       headers: directAuthHeader(creds.token),
@@ -193,6 +223,11 @@ export async function fetchCatalogItem(
   creds: DremioCredentials,
   id: string
 ): Promise<CatalogItem> {
+  if (isCloud(creds)) {
+    return directRequest(cloudApiUrl(creds, `catalog/${encodeURIComponent(id)}`), {
+      headers: requestAuthHeader(creds),
+    });
+  }
   if (creds.direct) {
     return directRequest(`${creds.url}/api/v3/catalog/${encodeURIComponent(id)}`, {
       headers: directAuthHeader(creds.token),
@@ -420,7 +455,7 @@ export async function fetchFormatStatus(
 async function promoteToSimpleFileDataset(
   creds: DremioCredentials,
   item: CatalogItem,
-  type: 'Parquet' | 'Iceberg',
+  type: 'JSON' | 'Parquet' | 'Iceberg',
   target: FormatTarget
 ): Promise<CatalogItem> {
   const current = await fetchFileFormat(creds, item, target);
@@ -446,6 +481,26 @@ export function promoteToParquetDataset(
   isFolder = false
 ): Promise<CatalogItem> {
   return promoteToSimpleFileDataset(creds, item, 'Parquet', isFolder ? 'folder' : 'file');
+}
+
+/** Exchange a Dremio Cloud PAT for the short-lived Bearer token used by Cloud APIs. */
+export async function exchangeCloudPat(pat: string, region: DremioCloudRegion = 'us'): Promise<string> {
+  const data = await proxyRequest('dremio/cloud/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pat, region }),
+  });
+  const { token } = data as CloudLoginResponse;
+  if (!token) throw new Error('Cloud token exchange did not return an access token.');
+  return token;
+}
+
+export function promoteToJsonDataset(
+  creds: DremioCredentials,
+  item: CatalogItem,
+  isFolder = false
+): Promise<CatalogItem> {
+  return promoteToSimpleFileDataset(creds, item, 'JSON', isFolder ? 'folder' : 'file');
 }
 
 export function promoteToIcebergDataset(

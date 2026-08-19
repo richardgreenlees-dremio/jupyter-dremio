@@ -180,8 +180,8 @@ export function WikiViewer({ title, markdown, itemId, version, creds }: Props): 
           />
           {error && <div className="dremio-wiki-error">{error}</div>}
           <div className="dremio-wiki-editor-actions">
-            <button onClick={cancelEdit} disabled={saving}>Cancel</button>
-            <button onClick={() => { void submitEdit(); }} disabled={saving}>
+            <button className="dremio-tag-btn dremio-tag-btn--secondary" onClick={cancelEdit} disabled={saving}>Cancel</button>
+            <button className="dremio-tag-btn dremio-tag-btn--primary" onClick={() => { void submitEdit(); }} disabled={saving}>
               {saving ? 'Saving…' : 'Save'}
             </button>
           </div>

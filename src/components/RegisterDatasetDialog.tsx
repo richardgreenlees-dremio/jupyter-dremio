@@ -6,6 +6,7 @@ import {
   DremioCredentials,
   promoteToExcelDataset,
   promoteToIcebergDataset,
+  promoteToJsonDataset,
   promoteToParquetDataset,
   promoteToTextDataset,
 } from '../api';
@@ -79,7 +80,7 @@ function DelimiterSetting({
   );
 }
 
-function RegisterDatasetDialogInner({ item, creds, isFolder = false, initialFormat, onPromoted, onClose }: Props): JSX.Element {
+export function RegisterDatasetDialog({ item, creds, isFolder = false, initialFormat, onPromoted, onClose }: Props): JSX.Element {
   const name = item.path[item.path.length - 1] ?? item.id;
   const [format, setFormat] = useState<DatasetFormat>(() => initialFormat ?? formatForFile(item));
   const [columnDelimiter, setColumnDelimiter] = useState(() => columnDelimiterForFile(item));
@@ -106,10 +107,6 @@ function RegisterDatasetDialogInner({ item, creds, isFolder = false, initialForm
   };
 
   const handleSubmit = async () => {
-    if (!['Text (Delimited)', 'Excel', 'Parquet', 'Iceberg'].includes(format)) {
-      onClose();
-      return;
-    }
     setSubmitting(true);
     setError(null);
     try {
@@ -131,6 +128,8 @@ function RegisterDatasetDialogInner({ item, creds, isFolder = false, initialForm
         }, isFolder);
       } else if (format === 'Parquet') {
         await promoteToParquetDataset(creds, item, isFolder);
+      } else if (format === 'JSON') {
+        await promoteToJsonDataset(creds, item, isFolder);
       } else {
         await promoteToIcebergDataset(creds, item, isFolder);
       }
@@ -143,7 +142,7 @@ function RegisterDatasetDialogInner({ item, creds, isFolder = false, initialForm
     }
   };
 
-  return (
+  return ReactDOM.createPortal(
     <div className="dremio-tag-overlay" onClick={handleOverlayClick}>
       <div className="dremio-tag-dialog dremio-register-dialog">
         <div className="dremio-tag-header">
@@ -255,10 +254,7 @@ function RegisterDatasetDialogInner({ item, creds, isFolder = false, initialForm
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
-}
-
-export function RegisterDatasetDialog(props: Props): JSX.Element {
-  return ReactDOM.createPortal(<RegisterDatasetDialogInner {...props} />, document.body);
 }

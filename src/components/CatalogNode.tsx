@@ -76,11 +76,6 @@ function getDeleteLabel(item: CatalogItem, resolvedType?: string | null): string
   return null;
 }
 
-function nodeIcon(item: CatalogItem, detailType?: string | null): JSX.Element | string {
-  if (item.datasetType === 'PROMOTED') return <IconTable />;
-  return itemIcon(item);
-}
-
 export function CatalogNode({
   item,
   creds,
@@ -243,7 +238,9 @@ export function CatalogNode({
           </span>
         )}
         {!expandable && <span className="dremio-chevron dremio-chevron--leaf" />}
-        <span className="dremio-node-icon">{nodeIcon(item, detailType)}</span>
+        <span className="dremio-node-icon">
+          {item.datasetType === 'PROMOTED' ? <IconTable /> : itemIcon(item)}
+        </span>
         <span className="dremio-node-label">{displayName}</span>
         {container && (
           <button className="dremio-refresh-btn" onClick={handleRefresh} title="Refresh">

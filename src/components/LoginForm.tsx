@@ -1,15 +1,20 @@
 import * as React from 'react';
 import { useState } from 'react';
+import { DremioCloudRegion, DremioEnvironment } from '../api';
 
 interface Props {
   onLogin: (url: string, username: string, password: string, useTls: boolean) => void;
   onSsoLogin: (url: string, useTls: boolean) => void;
+  onCloudLogin: (environment: 'cloud-gen1' | 'cloud-gen2', projectId: string, token: string, region: DremioCloudRegion) => void;
   error: string | null;
   direct: boolean;
 }
 
 const LS_URL      = 'jupyter-dremio:url';
 const LS_USERNAME = 'jupyter-dremio:username';
+const LS_ENVIRONMENT = 'jupyter-dremio:environment';
+const LS_PROJECT_ID = 'jupyter-dremio:project-id';
+const LS_CLOUD_REGION = 'jupyter-dremio:cloud-region';
 
 function saved(key: string): string {
   try { return localStorage.getItem(key) ?? ''; } catch { return ''; }
@@ -19,13 +24,40 @@ function persist(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* ignore */ }
 }
 
-export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.Element {
+export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: Props): JSX.Element {
   const [url, setUrl]       = useState(() => saved(LS_URL));
+  const [environment, setEnvironment] = useState<DremioEnvironment>(
+    () => (saved(LS_ENVIRONMENT) as DremioEnvironment) || 'software'
+  );
+  const [projectId, setProjectId] = useState(() => saved(LS_PROJECT_ID));
+  const [cloudRegion, setCloudRegion] = useState<DremioCloudRegion>(
+    () => (saved(LS_CLOUD_REGION) as DremioCloudRegion) || 'us'
+  );
+  const [token, setToken] = useState('');
   const [username, setUsername] = useState(() => saved(LS_USERNAME));
   const [password, setPassword] = useState('');
   const [showCredentials, setShowCredentials] = useState(direct);
   const [busy, setBusy] = useState(false);
   const [useTls, setUseTls] = useState(true);
+  const isCloud = environment !== 'software';
+
+  const handleEnvironmentChange = (value: DremioEnvironment) => {
+    setEnvironment(value);
+    persist(LS_ENVIRONMENT, value);
+    setShowCredentials(value !== 'software' || direct);
+  };
+
+  const handleCloudLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!projectId.trim() || !token.trim() || !isCloud) return;
+    persist(LS_PROJECT_ID, projectId.trim());
+    setBusy(true);
+    try {
+      onCloudLogin(environment, projectId.trim(), token.trim(), cloudRegion);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const handleSso = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,6 +93,20 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
       </div>
 
       <div className="dremio-login-field">
+        <label className="dremio-login-label">Environment</label>
+        <select
+          className="dremio-login-input"
+          value={environment}
+          onChange={e => handleEnvironmentChange(e.target.value as DremioEnvironment)}
+          disabled={busy}
+        >
+          <option value="software">Dremio Software</option>
+          <option value="cloud-gen1">Dremio Cloud — Gen 1</option>
+          <option value="cloud-gen2">Dremio Cloud — Gen 2</option>
+        </select>
+      </div>
+
+      {!isCloud && <div className="dremio-login-field">
         <label className="dremio-login-label">Dremio URL</label>
         <input
           className="dremio-login-input"
@@ -71,9 +117,41 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
           disabled={busy}
           autoComplete="url"
         />
-      </div>
+      </div>}
 
-      {!direct && !showCredentials && (
+      {isCloud && (
+        <form onSubmit={handleCloudLogin}>
+          <div className="dremio-login-field">
+            <label className="dremio-login-label">Project ID</label>
+            <input className="dremio-login-input" value={projectId} onChange={e => setProjectId(e.target.value)} disabled={busy} autoComplete="off" />
+          </div>
+          <div className="dremio-login-field">
+            <label className="dremio-login-label">Control plane region</label>
+            <select
+              className="dremio-login-input"
+              value={cloudRegion}
+              onChange={e => {
+                const region = e.target.value as DremioCloudRegion;
+                setCloudRegion(region);
+                persist(LS_CLOUD_REGION, region);
+              }}
+              disabled={busy}
+            >
+              <option value="us">US</option>
+              <option value="eu">Europe</option>
+            </select>
+          </div>
+          <div className="dremio-login-field">
+            <label className="dremio-login-label">Personal Access Token</label>
+            <input className="dremio-login-input" type="password" value={token} onChange={e => setToken(e.target.value)} disabled={busy} autoComplete="off" />
+          </div>
+          <button className="dremio-login-btn dremio-login-btn--primary" type="submit" disabled={busy || !projectId.trim() || !token.trim()}>
+            {busy ? 'Connecting…' : 'Connect to Dremio Cloud'}
+          </button>
+        </form>
+      )}
+
+      {!isCloud && !direct && !showCredentials && (
         <form onSubmit={handleSso}>
           <button
             className="dremio-login-btn dremio-login-btn--primary"
@@ -93,7 +171,7 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
         </form>
       )}
 
-      {showCredentials && (
+      {!isCloud && showCredentials && (
         <form onSubmit={handleLogin}>
           <div className="dremio-login-field">
             <label className="dremio-login-label">Username</label>
@@ -140,7 +218,7 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
 
       {error && <div className="dremio-login-error">{error}</div>}
 
-      <label className="dremio-login-tls">
+      {!isCloud && <label className="dremio-login-tls">
         <input
           type="checkbox"
           checked={useTls}
@@ -148,9 +226,13 @@ export function LoginForm({ onLogin, onSsoLogin, error, direct }: Props): JSX.El
           disabled={busy}
         />
         Use TLS
-      </label>
+      </label>}
 
-      {direct && (
+      {isCloud && (
+        <div className="dremio-login-notice">Cloud uses the Dremio Cloud API with a Bearer token. The token is kept only for this session.</div>
+      )}
+
+      {!isCloud && direct && (
         <div className="dremio-login-notice">
           Direct mode — browser connects to Dremio directly (SSO unavailable).
         </div>
