@@ -10,11 +10,14 @@ import {
   isDataset,
   isFile,
   buildSqlPath,
-  itemIcon,
+  CatalogItemKind,
+  resolvedCatalogItemKind,
+  catalogDeleteLabel,
 } from '../api';
 import { ContextMenu } from './ContextMenu';
 import { TagEditor } from './TagEditor';
 import { RegisterDatasetDialog } from './RegisterDatasetDialog';
+import { CatalogItemIcon } from './CatalogItemIcon';
 
 interface Props {
   item: CatalogItem;
@@ -29,18 +32,7 @@ interface Props {
   expanded: boolean;
   expandedIds: ReadonlySet<string>;
   onExpandedChange: (id: string, expanded: boolean) => void;
-}
-
-function IconTable(): JSX.Element {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
-      <rect x="1" y="1" width="14" height="14" rx="1.5"/>
-      <line x1="1" y1="5" x2="15" y2="5"/>
-      <line x1="1" y1="9" x2="15" y2="9"/>
-      <line x1="1" y1="13" x2="15" y2="13"/>
-      <line x1="5" y1="1" x2="5" y2="15"/>
-    </svg>
-  );
+  parentKind?: CatalogItemKind;
 }
 
 const TYPE_BADGE: Record<string, string> = {
@@ -57,25 +49,6 @@ function typeBadge(typeName: string): string {
   return TYPE_BADGE[typeName.toUpperCase()] ?? typeName.toLowerCase().slice(0, 3);
 }
 
-function getDeleteLabel(item: CatalogItem, resolvedType?: string | null): string | null {
-  // Collect every field that might carry the entity sub-type. Dremio returns
-  // these in different fields depending on version and whether the item came
-  // from a listing (children[]) or a full detail fetch.
-  const candidates = [
-    item.containerType,
-    item.datasetType,
-    resolvedType,   // from the full-detail fetch when the node is expanded
-    item.type,
-    item.entityType,
-  ];
-  if (candidates.includes('FOLDER'))           return 'Delete folder';
-  if (candidates.includes('VIRTUAL_DATASET'))  return 'Delete view';
-  if (candidates.includes('PHYSICAL_DATASET')) return 'Delete table';
-  // Type is "DATASET" but sub-type unknown (common in listing responses)
-  if (candidates.includes('DATASET'))          return 'Delete dataset';
-  return null;
-}
-
 export function CatalogNode({
   item,
   creds,
@@ -89,11 +62,13 @@ export function CatalogNode({
   expanded,
   expandedIds,
   onExpandedChange,
+  parentKind,
 }: Props): JSX.Element {
   const [children, setChildren] = useState<CatalogItem[]>([]);
   const [fields, setFields] = useState<ColumnField[]>([]);
   // Sub-type resolved from the full-detail fetch (may not be in listing items)
   const [detailType, setDetailType] = useState<string | null>(null);
+  const [detailItem, setDetailItem] = useState<CatalogItem | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
@@ -102,6 +77,7 @@ export function CatalogNode({
   const [registerFormat, setRegisterFormat] = useState<'Text (Delimited)' | 'JSON' | 'Parquet' | 'Excel' | 'Iceberg' | undefined>(undefined);
 
   const displayName = item.path[item.path.length - 1] ?? item.id;
+  const kind = resolvedCatalogItemKind(item, detailItem, parentKind);
   const container = isContainer(item);
   const dataset = isDataset(item);
   const file = isFile(item);
@@ -115,6 +91,7 @@ export function CatalogNode({
     setError(null);
     try {
       const detail = await fetchCatalogItem(creds, item.id);
+      setDetailItem(detail);
       // Capture the specific sub-type from the full detail response so the
       // delete label can be resolved even when the listing item only carries
       // the generic "DATASET" / "CONTAINER" type.
@@ -187,7 +164,7 @@ export function CatalogNode({
     void navigator.clipboard.writeText(sqlPath);
   };
 
-  const deleteLabel = getDeleteLabel(item, detailType);
+  const deleteLabel = catalogDeleteLabel(item, detailType);
 
   const handleDelete = async () => {
     if (!deleteLabel) return;
@@ -239,7 +216,7 @@ export function CatalogNode({
         )}
         {!expandable && <span className="dremio-chevron dremio-chevron--leaf" />}
         <span className="dremio-node-icon">
-          {item.datasetType === 'PROMOTED' ? <IconTable /> : itemIcon(item)}
+          <CatalogItemIcon kind={kind} />
         </span>
         <span className="dremio-node-label">{displayName}</span>
         {container && (
@@ -345,6 +322,7 @@ export function CatalogNode({
               expanded={expandedIds.has(child.id)}
               expandedIds={expandedIds}
               onExpandedChange={onExpandedChange}
+              parentKind={kind}
             />
           ))}
         </div>

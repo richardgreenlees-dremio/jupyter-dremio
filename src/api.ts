@@ -27,7 +27,23 @@ export interface DremioCredentials {
 
 export type CatalogEntityType = 'CONTAINER' | 'DATASET' | 'FILE';
 export type ContainerSubType = 'SPACE' | 'SOURCE' | 'FOLDER' | 'HOME';
-export type DatasetSubType = 'VIRTUAL_DATASET' | 'PHYSICAL_DATASET' | 'PROMOTED';
+export type DatasetSubType =
+  | 'VIRTUAL_DATASET' | 'PHYSICAL_DATASET' | 'PROMOTED'
+  | 'VIRTUAL' | 'DIRECT';
+
+/** User-facing catalog categories, independent of Dremio API subtype names. */
+export type CatalogItemKind =
+  | 'catalog'
+  | 'home'
+  | 'space'
+  | 'folder'
+  | 'pds'
+  | 'vds'
+  | 'source'
+  | 'source-folder'
+  | 'formatted-source-folder'
+  | 'source-file'
+  | 'formatted-source-file';
 
 export interface ColumnField {
   name: string;
@@ -42,6 +58,10 @@ export interface CatalogItem {
   type?: CatalogEntityType | ContainerSubType | DatasetSubType;
   containerType?: ContainerSubType;
   datasetType?: DatasetSubType;
+  /** Present on the primary Open Catalog source in supported Dremio versions. */
+  isPrimaryCatalog?: boolean;
+  /** Source implementation returned by the detailed source endpoint. */
+  sourceType?: string;
   children?: CatalogItem[];
   fields?: ColumnField[];
   format?: { isFolder?: boolean };
@@ -783,15 +803,82 @@ export function isContainer(item: CatalogItem): boolean {
   );
 }
 
-export function itemIcon(item: CatalogItem): string {
-  const sub = item.containerType ?? item.type;
-  switch (sub) {
-    case 'HOME':             return '🏠';
-    case 'SPACE':            return '📦';
-    case 'SOURCE':           return '🗄️';
-    case 'FOLDER':           return (isDataset(item)) ? '🗃️' : '📁';
-    case 'VIRTUAL_DATASET':  return '👁️';
-    case 'PHYSICAL_DATASET': return '🗃️';
-    default:                 return '📄';
+const CATALOG_SOURCE_TYPES = new Set([
+  'NESSIE',
+  'ARCTIC',
+  'DCS_DREMIO_CATALOG_V1',
+  'DREMIO_CATALOG',
+  'DREMIO_CATALOG_EXTERNAL_V1',
+]);
+
+function isCatalogSourceType(sourceType: string): boolean {
+  const normalized = sourceType.toUpperCase();
+  return CATALOG_SOURCE_TYPES.has(normalized) || normalized.startsWith('DREMIO_CATALOG');
+}
+
+/**
+ * Normalize Dremio's version-specific catalog subtypes into the ten item
+ * categories rendered by the browser. Source descendants need parent context
+ * because the REST response represents both namespace and source folders as
+ * `CONTAINER/FOLDER`.
+ */
+export function catalogItemKind(
+  item: CatalogItem,
+  parentKind?: CatalogItemKind
+): CatalogItemKind {
+  const containerType = item.containerType ?? item.type;
+  const datasetType = item.datasetType ?? item.type;
+  // Detail responses identify a source implementation in `type`; some
+  // Dremio Software versions omit `entityType` on that response.
+  const sourceType = item.sourceType ?? item.type;
+  const inSource = parentKind === 'source' || parentKind === 'source-folder';
+
+  if (containerType === 'HOME') return 'home';
+  if (containerType === 'SPACE') return 'space';
+  if (
+    item.isPrimaryCatalog ||
+    (typeof sourceType === 'string' && isCatalogSourceType(sourceType))
+  ) return 'catalog';
+  if (containerType === 'SOURCE' || (item.entityType as string | undefined)?.toLowerCase() === 'source') return 'source';
+  if (containerType === 'FOLDER') return inSource ? 'source-folder' : 'folder';
+  if (item.type === 'FILE' || item.entityType === 'FILE') return 'source-file';
+
+  if (datasetType === 'VIRTUAL_DATASET' || datasetType === 'VIRTUAL') return 'vds';
+  if (datasetType === 'PROMOTED' && inSource) {
+    return item.format?.isFolder
+      ? 'formatted-source-folder'
+      : 'formatted-source-file';
   }
+  return 'pds';
+}
+
+/**
+ * A folder listing has more reliable type information than the detail response
+ * returned after expansion. Only let detail metadata upgrade a source to the
+ * primary catalog; otherwise retain the row's original category.
+ */
+export function resolvedCatalogItemKind(
+  item: CatalogItem,
+  detailItem: CatalogItem | null,
+  parentKind?: CatalogItemKind
+): CatalogItemKind {
+  const detailKind = detailItem && catalogItemKind(detailItem, parentKind);
+  return detailKind === 'catalog' ? detailKind : catalogItemKind(item, parentKind);
+}
+
+/** Return the contextual removal label without implying formatted source data is deleted. */
+export function catalogDeleteLabel(item: CatalogItem, resolvedType?: string | null): string | null {
+  const candidates = [
+    item.containerType,
+    item.datasetType,
+    resolvedType,
+    item.type,
+    item.entityType,
+  ];
+  if (candidates.includes('FOLDER'))           return 'Delete folder';
+  if (candidates.includes('VIRTUAL_DATASET'))  return 'Delete view';
+  if (candidates.includes('PROMOTED'))         return 'Remove Dataset Format';
+  if (candidates.includes('PHYSICAL_DATASET')) return 'Delete table';
+  if (candidates.includes('DATASET'))          return 'Delete dataset';
+  return null;
 }

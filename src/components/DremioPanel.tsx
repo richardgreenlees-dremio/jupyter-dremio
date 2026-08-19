@@ -11,12 +11,15 @@ import {
   ssoLogin,
   ssoLogout,
   fetchRootCatalog,
+  fetchCatalogItem,
   fetchWiki,
   fetchCatalogSearch,
   createFolder,
   detectServerExtension,
   exchangeCloudPat,
+  catalogItemKind,
 } from '../api';
+import { CatalogItemIcon } from './CatalogItemIcon';
 
 type Mode = 'detecting' | 'proxy' | 'direct';
 
@@ -30,6 +33,28 @@ interface Props {
   ) => void;
   onShowJobs: (creds: DremioCredentials) => void;
   onNewNotebook: (creds: DremioCredentials, item: CatalogItem | null) => void;
+}
+
+interface RootGroupProps {
+  label: string;
+  kind: 'catalog' | 'source' | 'space';
+  items: CatalogItem[];
+  expanded: boolean;
+  onExpandedChange: () => void;
+  renderItem: (item: CatalogItem) => JSX.Element;
+}
+
+function RootGroup({ label, kind, items, expanded, onExpandedChange, renderItem }: RootGroupProps): JSX.Element {
+  return (
+    <div className="dremio-node">
+      <div className="dremio-node-row" style={{ paddingLeft: '6px' }} onClick={onExpandedChange}>
+        <span className={`dremio-chevron${expanded ? ' dremio-chevron--open' : ''}`}>›</span>
+        <span className="dremio-node-icon"><CatalogItemIcon kind={kind} /></span>
+        <span className="dremio-node-label">{label}</span>
+      </div>
+      {expanded && <div className="dremio-node-children">{items.map(renderItem)}</div>}
+    </div>
+  );
 }
 
 export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): JSX.Element {
@@ -51,6 +76,9 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchDiag, setSearchDiag] = useState<string | null>(null);
   const [searchExpanded, setSearchExpanded] = useState(true);
+  const [catalogsExpanded, setCatalogsExpanded] = useState(true);
+  const [sourcesExpanded, setSourcesExpanded] = useState(true);
+  const [spacesExpanded, setSpacesExpanded] = useState(true);
 
   useEffect(() => {
     detectServerExtension().then(hasProxy => {
@@ -116,7 +144,22 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
     setRootError(null);
     try {
       const data = await fetchRootCatalog(c);
-      setRootItems(data.data ?? []);
+      const items = data.data ?? [];
+      // The root-list API represents both external sources and Open Catalog as
+      // CONTAINER/SOURCE. Fetch source details in parallel to retain the
+      // source implementation (for example NESSIE) or primary-catalog flag.
+      const enrichedItems = await Promise.all(items.map(async item => {
+        if (item.containerType !== 'SOURCE') return item;
+        try {
+          const detail = await fetchCatalogItem(c, item.id);
+          const sourceType = detail.sourceType ?? detail.type as string | undefined;
+          return { ...item, sourceType, isPrimaryCatalog: detail.isPrimaryCatalog };
+        } catch {
+          // Keep root listing available if a source detail request is denied.
+          return item;
+        }
+      }));
+      setRootItems(enrichedItems);
       setCatalogRevision(revision => revision + 1);
     } catch (e) {
       setRootError(e instanceof Error ? e.message : String(e));
@@ -256,6 +299,34 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
   }
 
   const hasActiveSearch = activeQuery.trim().length > 0;
+  const homeItems = rootItems.filter(item => catalogItemKind(item) === 'home');
+  const catalogItems = rootItems.filter(item => catalogItemKind(item) === 'catalog');
+  const sourceItems = rootItems.filter(item => catalogItemKind(item) === 'source');
+  const spaceItems = rootItems.filter(item => catalogItemKind(item) === 'space');
+  const otherRootItems = rootItems.filter(item => {
+    const kind = catalogItemKind(item);
+    return kind !== 'home' && kind !== 'catalog' && kind !== 'source' && kind !== 'space';
+  });
+  const renderRootNode = (item: CatalogItem, depth: number): JSX.Element => (
+    <CatalogNode
+      key={item.id}
+      item={item}
+      creds={creds}
+      depth={depth}
+      selected={selected}
+      onSelect={setSelectedItem}
+      onOpenWiki={handleOpenWiki}
+      onDeleteItem={id => {
+        setRootItems(prev => prev.filter(i => i.id !== id));
+        if (selectedItem?.id === id) setSelectedItem(null);
+      }}
+      onCatalogChanged={handleRefreshRoot}
+      catalogRevision={catalogRevision}
+      expanded={expandedIds.has(item.id)}
+      expandedIds={expandedIds}
+      onExpandedChange={handleExpandedChange}
+    />
+  );
 
   return (
     <div className="dremio-panel">
@@ -355,27 +426,39 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
         {rootError && (
           <div className="dremio-root-error">{rootError}</div>
         )}
+        {!rootLoading && homeItems.map(item => renderRootNode(item, 0))}
+        {!rootLoading && catalogItems.length > 0 && (
+          <RootGroup
+            label="Catalogs"
+            kind="catalog"
+            items={catalogItems}
+            expanded={catalogsExpanded}
+            onExpandedChange={() => setCatalogsExpanded(prev => !prev)}
+            renderItem={item => renderRootNode(item, 1)}
+          />
+        )}
+        {!rootLoading && spaceItems.length > 0 && (
+          <RootGroup
+            label="Spaces"
+            kind="space"
+            items={spaceItems}
+            expanded={spacesExpanded}
+            onExpandedChange={() => setSpacesExpanded(prev => !prev)}
+            renderItem={item => renderRootNode(item, 1)}
+          />
+        )}
+        {!rootLoading && sourceItems.length > 0 && (
+          <RootGroup
+            label="Sources"
+            kind="source"
+            items={sourceItems}
+            expanded={sourcesExpanded}
+            onExpandedChange={() => setSourcesExpanded(prev => !prev)}
+            renderItem={item => renderRootNode(item, 1)}
+          />
+        )}
         {!rootLoading &&
-          rootItems.map(item => (
-            <CatalogNode
-              key={item.id}
-              item={item}
-              creds={creds}
-              depth={0}
-              selected={selected}
-              onSelect={setSelectedItem}
-              onOpenWiki={handleOpenWiki}
-              onDeleteItem={id => {
-                setRootItems(prev => prev.filter(i => i.id !== id));
-                if (selectedItem?.id === id) setSelectedItem(null);
-              }}
-              onCatalogChanged={handleRefreshRoot}
-              catalogRevision={catalogRevision}
-              expanded={expandedIds.has(item.id)}
-              expandedIds={expandedIds}
-              onExpandedChange={handleExpandedChange}
-            />
-          ))}
+          otherRootItems.map(item => renderRootNode(item, 0))}
         {!rootLoading && !rootError && rootItems.length === 0 && (
           <div className="dremio-root-empty">No catalog items found.</div>
         )}
