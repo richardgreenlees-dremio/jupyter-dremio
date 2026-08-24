@@ -62,9 +62,13 @@ export interface CatalogItem {
   isPrimaryCatalog?: boolean;
   /** Source implementation returned by the detailed source endpoint. */
   sourceType?: string;
+  /** UI-only marker propagated to Open Catalog namespaces in the save dialog. */
+  openCatalog?: boolean;
   children?: CatalogItem[];
   fields?: ColumnField[];
   format?: { isFolder?: boolean };
+  /** Privileges returned by the Catalog API when include=permissions is used. */
+  permissions?: string[];
 }
 
 export interface CatalogRoot {
@@ -224,16 +228,37 @@ export async function ssoLogout(dremioUrl: string): Promise<void> {
   );
 }
 
-export async function fetchRootCatalog(creds: DremioCredentials): Promise<CatalogRoot> {
+function catalogIncludeUrl(url: string, includePermissions: boolean): string {
+  return includePermissions ? `${url}${url.includes('?') ? '&' : '?'}include=permissions` : url;
+}
+
+function catalogItemUrl(creds: DremioCredentials, id: string): string {
+  if (id.startsWith('path:')) {
+    const encodedPath = id.slice(5).split('/').map(encodeURIComponent).join('/');
+    return isCloud(creds)
+      ? cloudApiUrl(creds, `catalog/by-path/${encodedPath}`)
+      : `${creds.url}/api/v3/catalog/by-path/${encodedPath}`;
+  }
+  return isCloud(creds)
+    ? cloudApiUrl(creds, `catalog/${encodeURIComponent(id)}`)
+    : `${creds.url}/api/v3/catalog/${encodeURIComponent(id)}`;
+}
+
+export async function fetchRootCatalog(
+  creds: DremioCredentials,
+  includePermissions = false
+): Promise<CatalogRoot> {
   if (isCloud(creds)) {
-    return directRequest(cloudApiUrl(creds, 'catalog'), { headers: requestAuthHeader(creds) });
+    return directRequest(catalogIncludeUrl(cloudApiUrl(creds, 'catalog'), includePermissions), {
+      headers: requestAuthHeader(creds),
+    });
   }
   if (creds.direct) {
-    return directRequest(`${creds.url}/api/v3/catalog`, {
+    return directRequest(catalogIncludeUrl(`${creds.url}/api/v3/catalog`, includePermissions), {
       headers: directAuthHeader(creds.token),
     });
   }
-  return proxyRequest('dremio/catalog', {
+  return proxyRequest(`dremio/catalog${includePermissions ? '?include=permissions' : ''}`, {
     method: 'GET',
     headers: proxyHeaders(creds),
   });
@@ -241,22 +266,94 @@ export async function fetchRootCatalog(creds: DremioCredentials): Promise<Catalo
 
 export async function fetchCatalogItem(
   creds: DremioCredentials,
-  id: string
+  id: string,
+  includePermissions = false
 ): Promise<CatalogItem> {
-  if (isCloud(creds)) {
-    return directRequest(cloudApiUrl(creds, `catalog/${encodeURIComponent(id)}`), {
+  if (creds.direct) {
+    return directRequest(catalogIncludeUrl(catalogItemUrl(creds, id), includePermissions), {
       headers: requestAuthHeader(creds),
     });
   }
-  if (creds.direct) {
-    return directRequest(`${creds.url}/api/v3/catalog/${encodeURIComponent(id)}`, {
-      headers: directAuthHeader(creds.token),
-    });
-  }
-  return proxyRequest(`dremio/catalog/${encodeURIComponent(id)}`, {
+  return proxyRequest(
+    `dremio/catalog/${encodeURIComponent(id)}${includePermissions ? '?include=permissions' : ''}`,
+    {
     method: 'GET',
     headers: proxyHeaders(creds),
+    }
+  );
+}
+
+/** Return the object at an exact catalog path, or null when the path is unused. */
+export async function findCatalogItemByPath(
+  creds: DremioCredentials,
+  path: string[]
+): Promise<CatalogItem | null> {
+  try {
+    return await fetchCatalogItem(creds, `path:${path.join('/')}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('404:')) return null;
+    throw error;
+  }
+}
+
+/** True only for containers where the current user can create a Dremio object. */
+export function canWriteCatalogItem(item: CatalogItem): boolean {
+  if (!['SPACE', 'SOURCE', 'FOLDER'].includes(item.containerType ?? '')) return false;
+  const permissions = item.permissions ?? [];
+  return permissions.some(permission =>
+    ['ALL', 'WRITE', 'CREATE_TABLE'].includes(permission.toUpperCase())
+  );
+}
+
+/** True only when Dremio explicitly returned a privilege allowing DROP. */
+export function hasDropCatalogPermission(item: CatalogItem): boolean {
+  return (item.permissions ?? []).some(permission =>
+    ['ALL', 'DROP', 'OWNERSHIP'].includes(permission.toUpperCase())
+  );
+}
+
+export interface SubmittedSqlJob {
+  id: string;
+}
+
+/** Submit SQL as a Dremio job without opening a Flight SQL result stream. */
+export async function submitSql(
+  creds: DremioCredentials,
+  sql: string
+): Promise<SubmittedSqlJob> {
+  const body = JSON.stringify({ sql });
+  if (creds.direct) {
+    const url = isCloud(creds)
+      ? cloudApiUrl(creds, 'sql')
+      : `${creds.url}/api/v3/sql`;
+    return directRequest(url, {
+      method: 'POST',
+      headers: { ...requestAuthHeader(creds), 'Content-Type': 'application/json' },
+      body,
+    });
+  }
+  return proxyRequest('dremio/sql', {
+    method: 'POST',
+    headers: proxyHeaders(creds),
+    body,
   });
+}
+
+/** Drop a physical table through Dremio SQL, not the Catalog DELETE API. */
+export async function dropTable(
+  creds: DremioCredentials,
+  path: string[]
+): Promise<SubmittedSqlJob> {
+  return submitSql(creds, `DROP TABLE ${buildSqlPath(path)}`);
+}
+
+/** Drop a virtual dataset through Dremio SQL, not the Catalog DELETE API. */
+export async function dropView(
+  creds: DremioCredentials,
+  path: string[]
+): Promise<SubmittedSqlJob> {
+  return submitSql(creds, `DROP VIEW ${buildSqlPath(path)}`);
 }
 
 export async function deleteCatalogItem(
@@ -866,6 +963,12 @@ export function resolvedCatalogItemKind(
   return detailKind === 'catalog' ? detailKind : catalogItemKind(item, parentKind);
 }
 
+/** External source data is managed outside this plugin; only format removal is allowed. */
+export function canRemoveCatalogItem(kind: CatalogItemKind, withinSource: boolean): boolean {
+  if (!withinSource) return true;
+  return kind === 'formatted-source-folder' || kind === 'formatted-source-file';
+}
+
 /** Return the contextual removal label without implying formatted source data is deleted. */
 export function catalogDeleteLabel(item: CatalogItem, resolvedType?: string | null): string | null {
   const candidates = [
@@ -876,9 +979,9 @@ export function catalogDeleteLabel(item: CatalogItem, resolvedType?: string | nu
     item.entityType,
   ];
   if (candidates.includes('FOLDER'))           return 'Delete folder';
-  if (candidates.includes('VIRTUAL_DATASET'))  return 'Delete view';
+  if (candidates.includes('VIRTUAL_DATASET') || candidates.includes('VIRTUAL')) return 'Drop View';
   if (candidates.includes('PROMOTED'))         return 'Remove Dataset Format';
-  if (candidates.includes('PHYSICAL_DATASET')) return 'Delete table';
+  if (candidates.includes('PHYSICAL_DATASET')) return 'Drop Table';
   if (candidates.includes('DATASET'))          return 'Delete dataset';
   return null;
 }

@@ -33,6 +33,7 @@ interface Props {
   ) => void;
   onShowJobs: (creds: DremioCredentials) => void;
   onNewNotebook: (creds: DremioCredentials, item: CatalogItem | null) => void;
+  onCredentialsChanged: (creds: DremioCredentials | null) => void;
 }
 
 interface RootGroupProps {
@@ -57,7 +58,7 @@ function RootGroup({ label, kind, items, expanded, onExpandedChange, renderItem 
   );
 }
 
-export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): JSX.Element {
+export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentialsChanged }: Props): JSX.Element {
   const [mode, setMode] = useState<Mode>('detecting');
   const [creds, setCreds] = useState<DremioCredentials | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -85,6 +86,10 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
       setMode(hasProxy ? 'proxy' : 'direct');
     });
   }, []);
+
+  useEffect(() => {
+    onCredentialsChanged(creds);
+  }, [creds, onCredentialsChanged]);
 
   // Debounce: commit the query 400ms after the user stops typing
   useEffect(() => {
@@ -412,6 +417,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook }: Props): J
                     expanded={expandedIds.has(item.id)}
                     expandedIds={expandedIds}
                     onExpandedChange={handleExpandedChange}
+                    inSource={sourceItems.some(source => source.path[0] === item.path[0])}
                   />
                 ))}
               </div>

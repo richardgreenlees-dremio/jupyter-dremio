@@ -205,8 +205,10 @@ class RootCatalogHandler(APIHandler):
     def get(self):
         dremio_url = _dremio_url(self)
         token = _dremio_token(self)
+        include = self.get_query_argument("include", default="")
+        suffix = "?include=permissions" if include == "permissions" else ""
         resp = requests.get(
-            f"{dremio_url}/api/v3/catalog",
+            f"{dremio_url}/api/v3/catalog{suffix}",
             headers=_auth_header(token),
             timeout=30,
         )
@@ -234,8 +236,10 @@ class CatalogItemHandler(APIHandler):
     def get(self, item_id: str):
         dremio_url = _dremio_url(self)
         token = _dremio_token(self)
+        include = self.get_query_argument("include", default="")
+        suffix = "?include=permissions" if include == "permissions" else ""
         resp = requests.get(
-            _catalog_url(dremio_url, item_id),
+            f"{_catalog_url(dremio_url, item_id)}{suffix}",
             headers=_auth_header(token),
             timeout=30,
         )
@@ -501,6 +505,25 @@ class JobsHandler(APIHandler):
         self.finish(data)
 
 
+class SqlHandler(APIHandler):
+    """Submit SQL as a Dremio job without using Arrow Flight result streaming."""
+
+    @web.authenticated
+    def post(self):
+        dremio_url = _dremio_url(self)
+        token = _dremio_token(self)
+        body = json.loads(self.request.body)
+        resp = requests.post(
+            f"{dremio_url}/api/v3/sql",
+            json=body,
+            headers={**_auth_header(token), "Content-Type": "application/json"},
+            timeout=30,
+        )
+        if not resp.ok:
+            raise web.HTTPError(resp.status_code, resp.text)
+        self.finish(resp.json())
+
+
 def setup_handlers(web_app):
     base = web_app.settings["base_url"].rstrip("/")
     handlers = [
@@ -514,6 +537,7 @@ def setup_handlers(web_app):
         (f"{base}/dremio/tags/(.+)", TagsHandler),
         (f"{base}/dremio/wiki/(.+)", WikiHandler),
         (f"{base}/dremio/jobs", JobsHandler),
+        (f"{base}/dremio/sql", SqlHandler),
         (f"{base}/dremio/catalog", RootCatalogHandler),
         (f"{base}/dremio/catalog/(.+)", CatalogItemHandler),
     ]

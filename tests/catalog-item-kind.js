@@ -1,5 +1,10 @@
 const assert = require('node:assert/strict');
-const { catalogItemKind, resolvedCatalogItemKind, catalogDeleteLabel } = require('../lib/api.js');
+const {
+  catalogItemKind,
+  resolvedCatalogItemKind,
+  catalogDeleteLabel,
+  canRemoveCatalogItem,
+} = require('../lib/api.js');
 
 const item = (overrides) => ({ id: 'id', path: ['root'], ...overrides });
 
@@ -20,7 +25,18 @@ assert.equal(catalogItemKind(item({ type: 'FILE' }), 'source-folder'), 'source-f
 assert.equal(catalogItemKind(item({ datasetType: 'PROMOTED', format: { isFolder: true } }), 'source'), 'formatted-source-folder');
 assert.equal(catalogItemKind(item({ datasetType: 'PROMOTED', format: { isFolder: false } }), 'source'), 'formatted-source-file');
 assert.equal(catalogDeleteLabel(item({ datasetType: 'PROMOTED' })), 'Remove Dataset Format');
-assert.equal(catalogDeleteLabel(item({ datasetType: 'PHYSICAL_DATASET' })), 'Delete table');
+assert.equal(catalogDeleteLabel(item({ datasetType: 'PHYSICAL_DATASET' })), 'Drop Table');
+assert.equal(catalogDeleteLabel(item({ datasetType: 'VIRTUAL_DATASET' })), 'Drop View');
+assert.equal(catalogDeleteLabel(item({ datasetType: 'VIRTUAL' })), 'Drop View');
+assert.equal(canRemoveCatalogItem('source-folder', true), false);
+assert.equal(canRemoveCatalogItem('source-file', true), false);
+assert.equal(canRemoveCatalogItem('pds', true), false);
+assert.equal(canRemoveCatalogItem('vds', true), false);
+assert.equal(canRemoveCatalogItem('formatted-source-folder', true), true);
+assert.equal(canRemoveCatalogItem('formatted-source-file', true), true);
+assert.equal(canRemoveCatalogItem('folder', false), true);
+assert.equal(canRemoveCatalogItem('pds', false), true);
+assert.equal(canRemoveCatalogItem('vds', false), true);
 assert.equal(
   resolvedCatalogItemKind(
     item({ containerType: 'FOLDER' }),

@@ -6,6 +6,8 @@ import {
   ColumnField,
   fetchCatalogItem,
   deleteCatalogItem,
+  dropTable,
+  dropView,
   isContainer,
   isDataset,
   isFile,
@@ -13,6 +15,7 @@ import {
   CatalogItemKind,
   resolvedCatalogItemKind,
   catalogDeleteLabel,
+  canRemoveCatalogItem,
 } from '../api';
 import { ContextMenu } from './ContextMenu';
 import { TagEditor } from './TagEditor';
@@ -33,6 +36,7 @@ interface Props {
   expandedIds: ReadonlySet<string>;
   onExpandedChange: (id: string, expanded: boolean) => void;
   parentKind?: CatalogItemKind;
+  inSource?: boolean;
 }
 
 const TYPE_BADGE: Record<string, string> = {
@@ -63,6 +67,7 @@ export function CatalogNode({
   expandedIds,
   onExpandedChange,
   parentKind,
+  inSource = false,
 }: Props): JSX.Element {
   const [children, setChildren] = useState<CatalogItem[]>([]);
   const [fields, setFields] = useState<ColumnField[]>([]);
@@ -82,6 +87,7 @@ export function CatalogNode({
   const dataset = isDataset(item);
   const file = isFile(item);
   const folder = item.containerType === 'FOLDER' || item.type === 'FOLDER' || detailType === 'FOLDER';
+  const withinSource = inSource || kind === 'source';
   const expandable = container || dataset;
   const isSelected = selected === item.id;
   const sqlPath = buildSqlPath(item.path);
@@ -164,13 +170,23 @@ export function CatalogNode({
     void navigator.clipboard.writeText(sqlPath);
   };
 
-  const deleteLabel = catalogDeleteLabel(item, detailType);
+  const physicalTable = kind === 'pds';
+  const virtualView = kind === 'vds';
+  const deleteLabel = physicalTable
+    ? 'Drop Table'
+    : virtualView
+      ? 'Drop View'
+      : catalogDeleteLabel(item, detailType);
+  const deleteActionLabel = deleteLabel ?? '';
+  const canShowDeleteAction = Boolean(deleteLabel) && canRemoveCatalogItem(kind, withinSource);
 
   const handleDelete = async () => {
     if (!deleteLabel) return;
     if (!window.confirm(`${deleteLabel} "${displayName}"? This cannot be undone.`)) return;
     try {
-      await deleteCatalogItem(creds, item.id);
+      if (physicalTable) await dropTable(creds, item.path);
+      else if (virtualView) await dropView(creds, item.path);
+      else await deleteCatalogItem(creds, item.id);
       onDeleteItem(item.id);
       await onCatalogChanged();
     } catch (e) {
@@ -253,9 +269,9 @@ export function CatalogNode({
               onClick: () => { void handleRegisterDataset(); },
               separator: true,
             }] : []),
-            ...(deleteLabel ? [{
+            ...(canShowDeleteAction ? [{
               icon: '🗑️',
-              label: deleteLabel,
+              label: deleteActionLabel,
               onClick: () => { void handleDelete(); },
               separator: !(file || folder),
               danger: true,
@@ -323,6 +339,7 @@ export function CatalogNode({
               expandedIds={expandedIds}
               onExpandedChange={onExpandedChange}
               parentKind={kind}
+              inSource={withinSource}
             />
           ))}
         </div>

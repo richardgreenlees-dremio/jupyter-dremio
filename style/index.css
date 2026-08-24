@@ -981,6 +981,134 @@
   min-height: 420px;
 }
 
+/* ── Save to Dremio dialog ─────────────────────────────────────────────── */
+
+.dremio-save-dialog {
+  width: 620px;
+}
+
+.dremio-save-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dremio-save-input,
+.dremio-save-select {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--jp-border-color1, #d0d0d0);
+  border-radius: 4px;
+  background: var(--jp-layout-color0, #fff);
+  color: var(--jp-ui-font-color1, #333);
+  font: inherit;
+}
+
+.dremio-save-tree {
+  min-height: 100px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--jp-border-color1, #d0d0d0);
+  border-radius: 4px;
+  background: var(--jp-layout-color0, #fff);
+  padding: 4px 0;
+}
+
+.dremio-save-tree-row {
+  display: flex;
+  align-items: center;
+  min-height: 27px;
+}
+
+.dremio-save-tree-row--selected {
+  background: var(--jp-brand-color3, #bbdefb);
+}
+
+.dremio-save-tree-toggle,
+.dremio-save-icon-button {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--jp-ui-font-color2, #777);
+  font: inherit;
+  cursor: pointer;
+}
+
+.dremio-save-tree-toggle:hover,
+.dremio-save-icon-button:hover {
+  background: var(--jp-layout-color3, #e0e0e0);
+  color: var(--jp-ui-font-color0, #111);
+}
+
+.dremio-save-tree-select {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+  height: 27px;
+  border: none;
+  background: transparent;
+  color: var(--jp-ui-font-color1, #333);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dremio-save-tree-select:hover {
+  background: var(--jp-layout-color2, #f0f0f0);
+}
+
+.dremio-save-tree-empty {
+  padding: 8px 12px;
+  color: var(--jp-ui-font-color2, #888);
+  font-size: 0.9em;
+  font-style: italic;
+}
+
+.dremio-save-partitions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dremio-save-partition-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.dremio-save-partition-row .dremio-save-input {
+  flex: 1;
+}
+
+.dremio-save-partition-row .dremio-save-select {
+  width: 130px;
+}
+
+.dremio-save-partition-argument {
+  width: 64px;
+  padding: 6px 8px;
+  border: 1px solid var(--jp-border-color1, #d0d0d0);
+  border-radius: 4px;
+  background: var(--jp-layout-color0, #fff);
+  color: var(--jp-ui-font-color1, #333);
+  font: inherit;
+}
+
+.dremio-save-add-partition {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--jp-brand-color1, #1976d2);
+  padding: 2px 0;
+  font: inherit;
+  cursor: pointer;
+}
+
 .dremio-register-format {
   width: 100%;
   padding: 7px 10px;
@@ -1302,4 +1430,23 @@
 
 .dremio-tag-btn--secondary:hover:not(:disabled) {
   background: var(--jp-layout-color3, #e8e8e8);
+}
+
+/* Per-cell Dremio query lifecycle */
+.dremio-cell-job-status {
+  margin: 4px 12px 8px 72px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--jp-brand-color1, #1976d2);
+  border-radius: 2px;
+  background: var(--jp-layout-color2, #f5f5f5);
+  color: var(--jp-ui-font-color1, #333);
+  font-size: var(--jp-ui-font-size1, 13px);
+}
+
+.dremio-cell-job-status--completed {
+  border-left-color: var(--jp-success-color1, #2e7d32);
+}
+
+.dremio-cell-job-status--failed {
+  border-left-color: var(--jp-error-color1, #c62828);
 }
