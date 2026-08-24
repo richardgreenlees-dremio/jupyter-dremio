@@ -88,6 +88,12 @@ export interface OidcProvider {
   label: string;
 }
 
+export interface SoftwareInstance {
+  id: string;
+  label: string;
+  url: string;
+}
+
 export interface WikiContent {
   text: string | null;
   version?: number;
@@ -229,6 +235,11 @@ export async function ssoLogin(dremioUrl: string): Promise<LoginResponse> {
 export async function fetchOidcProviders(): Promise<OidcProvider[]> {
   const data = await proxyRequest('dremio/oidc/providers', { method: 'GET' });
   return (data.providers ?? []) as OidcProvider[];
+}
+
+export async function fetchSoftwareInstances(): Promise<SoftwareInstance[]> {
+  const data = await proxyRequest('dremio/software/instances', { method: 'GET' });
+  return (data.instances ?? []) as SoftwareInstance[];
 }
 
 function delay(milliseconds: number): Promise<void> {

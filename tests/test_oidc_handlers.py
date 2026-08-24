@@ -73,6 +73,20 @@ class OidcHandlerTests(unittest.TestCase):
         self.assertEqual(set(loaded), {"entra", "okta"})
         self.assertEqual(loaded["entra"]["username_claim"], "preferred_username")
 
+    def test_named_software_instances_are_validated(self):
+        instances = [
+            {"id": "prod", "label": "Dremio Production", "url": "https://dremio.example/"},
+            {"id": "dev", "label": "Dremio Development", "url": "http://dremio-dev.example:9047"},
+        ]
+        with patch.dict(
+            os.environ,
+            {"JUPYTER_DREMIO_SOFTWARE_INSTANCES": json.dumps(instances)},
+            clear=True,
+        ):
+            loaded = handlers._software_instances()
+        self.assertEqual(loaded[0]["url"], "https://dremio.example")
+        self.assertEqual(loaded[1]["id"], "dev")
+
     def test_auth_headers_distinguish_oidc_and_kerberos(self):
         common = dict(dremio_url="https://dremio.example", owner="alice", username="alice")
         oidc = handlers.AuthSession(token="oauth", scheme="Bearer", **common)

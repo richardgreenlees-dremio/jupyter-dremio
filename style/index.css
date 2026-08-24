@@ -66,6 +66,23 @@
   opacity: 0.6;
 }
 
+.dremio-login-instance {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--jp-border-color2, #e0e0e0);
+  border-radius: 3px;
+  background: var(--jp-layout-color2, #f5f5f5);
+  color: var(--jp-ui-font-color1, #333);
+}
+
+.dremio-login-instance span,
+.dremio-login-field-help {
+  color: var(--jp-ui-font-color2, #777);
+  font-size: 0.85em;
+}
+
 .dremio-login-btn {
   display: block;
   width: 100%;
@@ -855,16 +872,6 @@
 
 .dremio-wiki-error {
   color: var(--jp-error-color1, #c62828);
-}
-
-.dremio-login-tls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 14px;
-  font-family: var(--jp-ui-font-family, sans-serif);
-  font-size: 13px;
-  color: var(--jp-ui-font-color1, #333);
 }
 
 /* Rendered markdown content */

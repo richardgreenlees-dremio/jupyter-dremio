@@ -321,6 +321,18 @@ pip install dist/jupyter_dremio-0.1.0-py3-none-any.whl
 
 The plugin supports any provider that implements OpenID Connect Authorization Code Flow with PKCE, including Microsoft Entra ID, Okta, Keycloak, and Authentik. The Jupyter server obtains an external JWT and exchanges it through Dremio Software's configured **External Token Provider** at `/oauth/token`.
 
+First configure the Dremio Software instances users may connect to:
+
+```powershell
+$env:JUPYTER_DREMIO_SOFTWARE_INSTANCES = @'
+[
+  {"id": "prod", "label": "Dremio Production", "url": "https://dremio.example.com"}
+]
+'@
+```
+
+One configured instance is displayed read-only on the login screen. Multiple instances produce a dropdown. If this variable is absent, the login screen retains the free-text Dremio URL field for backward compatibility. Flight SQL TLS is inferred from `https://`.
+
 Configure one or more named providers in the Jupyter server environment. Secrets must be supplied by the administrator, never entered in the sidebar:
 
 ```powershell
@@ -348,7 +360,7 @@ $env:JUPYTER_DREMIO_OIDC_PROVIDERS = @'
 '@
 ```
 
-Provider entries also accept `token_endpoint_auth_method` (`client_secret_basic`, `client_secret_post`, or `none`), `authorization_params`, and `id_token_algorithms`. The default signing algorithm is `RS256`. Public clients may omit `client_secret` and select `none`. Every provider requires a `dremio_urls` allowlist; this prevents an external JWT from being sent to a user-selected server. A shared comma-separated `JUPYTER_DREMIO_ALLOWED_URLS` variable may be used instead.
+Provider entries also accept `token_endpoint_auth_method` (`client_secret_basic`, `client_secret_post`, or `none`), `authorization_params`, and `id_token_algorithms`. The default signing algorithm is `RS256`. Public clients may omit `client_secret` and select `none`. OIDC Dremio targets are allowlisted by `dremio_urls`, a shared comma-separated `JUPYTER_DREMIO_ALLOWED_URLS`, or the configured `JUPYTER_DREMIO_SOFTWARE_INSTANCES`. This prevents an external JWT from being sent to a user-selected server.
 
 If Jupyter is behind a reverse proxy, explicitly configure the callback URL registered with every provider:
 

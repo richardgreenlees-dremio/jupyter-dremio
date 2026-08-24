@@ -140,6 +140,43 @@ def _oidc_providers() -> dict[str, dict[str, Any]]:
     return validated
 
 
+def _software_instances() -> list[dict[str, str]]:
+    raw = os.environ.get("JUPYTER_DREMIO_SOFTWARE_INSTANCES", "").strip()
+    if not raw:
+        return []
+    try:
+        instances = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise web.HTTPError(
+            500, "JUPYTER_DREMIO_SOFTWARE_INSTANCES is not valid JSON"
+        ) from exc
+    if not isinstance(instances, list):
+        raise web.HTTPError(
+            500, "JUPYTER_DREMIO_SOFTWARE_INSTANCES must be a JSON array"
+        )
+
+    validated: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for instance in instances:
+        if not isinstance(instance, dict):
+            raise web.HTTPError(500, "Each Dremio Software instance must be an object")
+        instance_id = str(instance.get("id", "")).strip()
+        label = str(instance.get("label", "")).strip()
+        url = str(instance.get("url", "")).rstrip("/")
+        if (
+            not instance_id
+            or not instance_id.replace("-", "").replace("_", "").isalnum()
+            or instance_id in seen_ids
+        ):
+            raise web.HTTPError(500, "Dremio instance IDs must be unique letters, numbers, '-' or '_'")
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.path not in ("", "/"):
+            raise web.HTTPError(500, f"Dremio instance '{instance_id}' requires an HTTP(S) origin URL")
+        seen_ids.add(instance_id)
+        validated.append({"id": instance_id, "label": label or instance_id, "url": url})
+    return validated
+
+
 def _cleanup_oidc_transactions() -> None:
     cutoff = time.time() - OIDC_TRANSACTION_TTL_SECONDS
     expired = [key for key, transaction in _oidc_transactions.items() if transaction.created_at < cutoff]
@@ -162,6 +199,8 @@ def _validate_oidc_dremio_url(dremio_url: str, provider: dict[str, Any]) -> None
         allowed = os.environ.get("JUPYTER_DREMIO_ALLOWED_URLS", "")
     if isinstance(allowed, str):
         allowed = [value.strip() for value in allowed.split(",") if value.strip()]
+    if not allowed:
+        allowed = [instance["url"] for instance in _software_instances()]
     if not isinstance(allowed, list) or not allowed:
         raise web.HTTPError(
             500,
@@ -245,6 +284,12 @@ class OidcProvidersHandler(APIHandler):
                 for provider_id, provider in providers.items()
             ]
         })
+
+
+class SoftwareInstancesHandler(APIHandler):
+    @web.authenticated
+    def get(self):
+        self.finish({"instances": _software_instances()})
 
 
 class OidcStartHandler(APIHandler):
@@ -969,6 +1014,7 @@ def setup_handlers(web_app):
     handlers = [
         (f"{base}/dremio/login", LoginHandler),
         (f"{base}/dremio/cloud/login", CloudLoginHandler),
+        (f"{base}/dremio/software/instances", SoftwareInstancesHandler),
         (f"{base}/dremio/oidc/providers", OidcProvidersHandler),
         (f"{base}/dremio/oidc/start", OidcStartHandler),
         (f"{base}/dremio/oidc/callback", OidcCallbackHandler),

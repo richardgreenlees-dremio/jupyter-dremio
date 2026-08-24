@@ -1,6 +1,6 @@
 {
   "name": "jupyter-dremio",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "JupyterLab extension for browsing the Dremio catalog",
   "keywords": [
     "jupyter",

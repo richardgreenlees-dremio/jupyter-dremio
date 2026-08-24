@@ -43,10 +43,10 @@ A JupyterLab 4.x sidebar extension for browsing and querying the Dremio catalog.
 
 ## Install
 
-Download `jupyter_dremio-0.1.17-py3-none-any.whl` from the [latest release](https://github.com/blikij/jupyter-dremio/releases/latest), then run:
+Download `jupyter_dremio-0.1.18-py3-none-any.whl` from the [latest release](https://github.com/blikij/jupyter-dremio/releases/latest), then run:
 
 ```bash
-pip install jupyter_dremio-0.1.17-py3-none-any.whl
+pip install jupyter_dremio-0.1.18-py3-none-any.whl
 ```
 
 Restart JupyterLab after installation. The Dremio icon appears in the left sidebar.
@@ -66,6 +66,13 @@ Optional:
 - `sqlglot[rs]` — faster SQL parsing used by JupySQL (`pip install sqlglot[rs]`)
 
 ## Changelog
+
+### 0.1.18
+- Administrators can configure named Dremio Software instances. The login screen
+  displays one target read-only or offers a dropdown for multiple targets.
+- The free-text URL remains as a backward-compatible fallback, and Flight SQL
+  TLS is inferred from the selected URL.
+- Added contextual setup help when OIDC SSO is not configured.
 
 ### 0.1.17
 - Added OIDC Authorization Code + PKCE login for Entra ID, Okta, Keycloak,

@@ -1,6 +1,13 @@
 import * as React from 'react';
 import { useEffect, useState } from 'react';
-import { DremioCloudRegion, DremioEnvironment, fetchOidcProviders, OidcProvider } from '../api';
+import {
+  DremioCloudRegion,
+  DremioEnvironment,
+  fetchOidcProviders,
+  fetchSoftwareInstances,
+  OidcProvider,
+  SoftwareInstance,
+} from '../api';
 
 interface Props {
   onLogin: (url: string, username: string, password: string, useTls: boolean) => Promise<void>;
@@ -41,10 +48,15 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
   const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
   const [selectedProvider, setSelectedProvider] = useState('');
   const [providerError, setProviderError] = useState<string | null>(null);
+  const [softwareInstances, setSoftwareInstances] = useState<SoftwareInstance[]>([]);
+  const [selectedInstanceId, setSelectedInstanceId] = useState('');
+  const [instanceError, setInstanceError] = useState<string | null>(null);
+  const [instancesLoading, setInstancesLoading] = useState(!direct);
   const [showOidcHelp, setShowOidcHelp] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [useTls, setUseTls] = useState(true);
   const isCloud = environment !== 'software';
+  const selectedInstance = softwareInstances.find(instance => instance.id === selectedInstanceId);
+  const effectiveUrl = selectedInstance?.url ?? url;
 
   useEffect(() => {
     if (direct) return;
@@ -55,6 +67,17 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
         setProviderError(null);
       })
       .catch(e => setProviderError(e instanceof Error ? e.message : String(e)));
+    fetchSoftwareInstances()
+      .then(instances => {
+        setSoftwareInstances(instances);
+        const rememberedUrl = saved(LS_URL).replace(/\/$/, '');
+        const initial = instances.find(instance => instance.url === rememberedUrl) ?? instances[0];
+        setSelectedInstanceId(initial?.id ?? '');
+        if (initial) persist(LS_URL, initial.url);
+        setInstanceError(null);
+      })
+      .catch(e => setInstanceError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setInstancesLoading(false));
   }, [direct]);
 
   const handleEnvironmentChange = (value: DremioEnvironment) => {
@@ -75,28 +98,28 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
     }
   };
 
-  const cleanDremioUrl = (): string => url.trim().replace(/\/$/, '');
+  const cleanDremioUrl = (): string => effectiveUrl.trim().replace(/\/$/, '');
 
   const handleOidc = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url.trim() || !selectedProvider) return;
+    if (!effectiveUrl.trim() || !selectedProvider) return;
     const cleanUrl = cleanDremioUrl();
     persist(LS_URL, cleanUrl);
     setBusy(true);
     try {
-      await onOidcLogin(cleanUrl, selectedProvider, useTls);
+      await onOidcLogin(cleanUrl, selectedProvider, cleanUrl.startsWith('https://'));
     } finally {
       setBusy(false);
     }
   };
 
   const handleKerberos = async () => {
-    if (!url.trim()) return;
+    if (!effectiveUrl.trim()) return;
     const cleanUrl = cleanDremioUrl();
     persist(LS_URL, cleanUrl);
     setBusy(true);
     try {
-      await onKerberosLogin(cleanUrl, useTls);
+      await onKerberosLogin(cleanUrl, cleanUrl.startsWith('https://'));
     } finally {
       setBusy(false);
     }
@@ -104,13 +127,13 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url.trim() || !username.trim()) return;
-    const cleanUrl = url.trim().replace(/\/$/, '');
+    if (!effectiveUrl.trim() || !username.trim()) return;
+    const cleanUrl = cleanDremioUrl();
     persist(LS_URL, cleanUrl);
     persist(LS_USERNAME, username.trim());
     setBusy(true);
     try {
-      await onLogin(cleanUrl, username.trim(), password, useTls);
+      await onLogin(cleanUrl, username.trim(), password, cleanUrl.startsWith('https://'));
     } finally {
       setBusy(false);
     }
@@ -136,18 +159,59 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
         </select>
       </div>
 
-      {!isCloud && <div className="dremio-login-field">
-        <label className="dremio-login-label">Dremio URL</label>
-        <input
-          className="dremio-login-input"
-          type="url"
-          placeholder="https://dremio.example.com"
-          value={url}
-          onChange={e => setUrl(e.target.value)}
-          disabled={busy}
-          autoComplete="url"
-        />
-      </div>}
+      {!isCloud && instancesLoading && (
+        <div className="dremio-login-field">
+          <label className="dremio-login-label">Dremio instance</label>
+          <div className="dremio-login-instance">Loading configured instances…</div>
+        </div>
+      )}
+
+      {!isCloud && !instancesLoading && softwareInstances.length === 1 && (
+        <div className="dremio-login-field">
+          <label className="dremio-login-label">Dremio instance</label>
+          <div className="dremio-login-instance" title={softwareInstances[0].url}>
+            <strong>{softwareInstances[0].label}</strong>
+            <span>{new URL(softwareInstances[0].url).hostname}</span>
+          </div>
+        </div>
+      )}
+
+      {!isCloud && !instancesLoading && softwareInstances.length > 1 && (
+        <div className="dremio-login-field">
+          <label className="dremio-login-label">Dremio instance</label>
+          <select
+            className="dremio-login-input"
+            value={selectedInstanceId}
+            onChange={e => {
+              const id = e.target.value;
+              setSelectedInstanceId(id);
+              const instance = softwareInstances.find(candidate => candidate.id === id);
+              if (instance) persist(LS_URL, instance.url);
+            }}
+            disabled={busy}
+          >
+            {softwareInstances.map(instance => (
+              <option key={instance.id} value={instance.id}>{instance.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {!isCloud && !instancesLoading && softwareInstances.length === 0 && (
+        <div className="dremio-login-field">
+          <label className="dremio-login-label">Dremio URL</label>
+          <input
+            className="dremio-login-input"
+            type="url"
+            placeholder="https://dremio.example.com"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            disabled={busy}
+            autoComplete="url"
+          />
+          {instanceError && <span className="dremio-login-field-help">Configured instances could not be loaded; enter the URL manually.</span>}
+        </div>
+      )}
 
       {isCloud && (
         <form onSubmit={handleCloudLogin}>
@@ -202,7 +266,7 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
             <button
               className="dremio-login-btn dremio-login-btn--primary"
               type="submit"
-              disabled={busy || !url.trim() || !selectedProvider}
+              disabled={busy || instancesLoading || !effectiveUrl.trim() || !selectedProvider}
             >
               {busy ? 'Connecting…' : `Sign in with ${oidcProviders.find(p => p.id === selectedProvider)?.label ?? 'SSO'}`}
             </button>
@@ -232,7 +296,7 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
             className={`dremio-login-btn ${oidcProviders.length === 0 ? 'dremio-login-btn--primary' : 'dremio-login-btn--link'}`}
             type="button"
             onClick={() => { void handleKerberos(); }}
-            disabled={busy || !url.trim()}
+            disabled={busy || instancesLoading || !effectiveUrl.trim()}
             title="Use Kerberos/SPNEGO with the Jupyter server's current Kerberos credentials."
           >
             {busy ? 'Connecting…' : 'Sign in with Kerberos'}
@@ -276,7 +340,7 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
           <button
             className="dremio-login-btn dremio-login-btn--primary"
             type="submit"
-            disabled={busy || !url.trim() || !username.trim()}
+            disabled={busy || instancesLoading || !effectiveUrl.trim() || !username.trim()}
           >
             {busy ? 'Signing in…' : 'Sign in'}
           </button>
@@ -293,16 +357,6 @@ export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin,
       )}
 
       {error && <div className="dremio-login-error">{error}</div>}
-
-      {!isCloud && <label className="dremio-login-tls">
-        <input
-          type="checkbox"
-          checked={useTls}
-          onChange={e => setUseTls(e.target.checked)}
-          disabled={busy}
-        />
-        Use TLS
-      </label>}
 
       {isCloud && (
         <div className="dremio-login-notice">Cloud uses the Dremio Cloud API with a Bearer token. The token is kept only for this session.</div>
