@@ -1,13 +1,52 @@
+import base64
+import hashlib
+import html
 import json
+import os
 import secrets
+import time
 import urllib.parse
+from dataclasses import dataclass
+from typing import Any, Optional, Union
 
 import requests
 from jupyter_server.base.handlers import APIHandler
 from tornado import web
 
-# In-memory store for SSO sessions: session_id -> dremio_token
-_sso_sessions: dict[str, str] = {}
+@dataclass
+class AuthSession:
+    token: str
+    scheme: str
+    dremio_url: str
+    owner: str
+    username: str
+    expires_at: Optional[float] = None
+
+
+@dataclass
+class OidcTransaction:
+    transaction_id: str
+    state: str
+    nonce: str
+    code_verifier: str
+    redirect_uri: str
+    dremio_url: str
+    owner: str
+    provider: dict[str, Any]
+    discovery: dict[str, Any]
+    created_at: float
+    session_id: Optional[str] = None
+    username: Optional[str] = None
+    error: Optional[str] = None
+
+
+# Jupyter Server normally runs one process per user. Deployments using multiple
+# web workers must replace these process-local stores with a shared TTL store.
+_sso_sessions: dict[str, AuthSession] = {}
+_oidc_transactions: dict[str, OidcTransaction] = {}
+_oidc_states: dict[str, str] = {}
+
+OIDC_TRANSACTION_TTL_SECONDS = 300
 
 
 def _dremio_url(handler: APIHandler) -> str:
@@ -17,19 +56,120 @@ def _dremio_url(handler: APIHandler) -> str:
     return url
 
 
-def _dremio_token(handler: APIHandler) -> str:
+def _owner(handler: APIHandler) -> str:
+    current_user = handler.current_user
+    if isinstance(current_user, bytes):
+        return current_user.decode("utf-8", errors="replace")
+    if isinstance(current_user, dict):
+        for key in ("name", "username", "user", "id"):
+            if current_user.get(key):
+                return str(current_user[key])
+        return json.dumps(current_user, sort_keys=True, default=str)
+    return str(current_user)
+
+
+def _dremio_token(handler: APIHandler) -> AuthSession:
     raw = handler.request.headers.get("X-Dremio-Token", "")
     if raw.startswith("__sso__:"):
         session_id = raw[len("__sso__:"):]
-        token = _sso_sessions.get(session_id)
-        if not token:
+        session = _sso_sessions.get(session_id)
+        if not session:
             raise web.HTTPError(401, "SSO session expired or not found")
-        return token
-    return raw
+        if session.owner != _owner(handler) or session.dremio_url != _dremio_url(handler):
+            raise web.HTTPError(403, "SSO session does not belong to this user or Dremio server")
+        if session.expires_at is not None and session.expires_at <= time.time():
+            _sso_sessions.pop(session_id, None)
+            raise web.HTTPError(401, "SSO session expired; sign in again")
+        return session
+    return AuthSession(raw, "_dremio", _dremio_url(handler), _owner(handler), "")
 
 
-def _auth_header(token: str) -> dict:
-    return {"Authorization": f"_dremio{token}"}
+def _auth_header(auth: Union[AuthSession, str]) -> dict[str, str]:
+    if isinstance(auth, str):
+        return {"Authorization": f"_dremio{auth}"}
+    separator = " " if auth.scheme.lower() == "bearer" else ""
+    return {"Authorization": f"{auth.scheme}{separator}{auth.token}"}
+
+
+def _b64url_sha256(value: str) -> str:
+    digest = hashlib.sha256(value.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _oidc_providers() -> dict[str, dict[str, Any]]:
+    raw = os.environ.get("JUPYTER_DREMIO_OIDC_PROVIDERS", "").strip()
+    if raw:
+        try:
+            providers = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise web.HTTPError(500, "JUPYTER_DREMIO_OIDC_PROVIDERS is not valid JSON") from exc
+        if not isinstance(providers, dict):
+            raise web.HTTPError(500, "JUPYTER_DREMIO_OIDC_PROVIDERS must be a JSON object")
+    else:
+        issuer = os.environ.get("JUPYTER_DREMIO_OIDC_ISSUER", "").strip()
+        client_id = os.environ.get("JUPYTER_DREMIO_OIDC_CLIENT_ID", "").strip()
+        if not issuer or not client_id:
+            return {}
+        providers = {
+            "default": {
+                "label": os.environ.get("JUPYTER_DREMIO_OIDC_LABEL", "Organisation SSO"),
+                "issuer": issuer,
+                "client_id": client_id,
+                "client_secret": os.environ.get("JUPYTER_DREMIO_OIDC_CLIENT_SECRET", ""),
+                "scopes": os.environ.get(
+                    "JUPYTER_DREMIO_OIDC_SCOPES", "openid profile email"
+                ),
+                "username_claim": os.environ.get(
+                    "JUPYTER_DREMIO_OIDC_USERNAME_CLAIM", "preferred_username"
+                ),
+            }
+        }
+
+    validated: dict[str, dict[str, Any]] = {}
+    for provider_id, provider in providers.items():
+        if not isinstance(provider_id, str) or not provider_id.replace("-", "").replace("_", "").isalnum():
+            raise web.HTTPError(500, "OIDC provider IDs may contain only letters, numbers, '-' and '_'")
+        if not isinstance(provider, dict) or not provider.get("issuer") or not provider.get("client_id"):
+            raise web.HTTPError(500, f"OIDC provider '{provider_id}' requires issuer and client_id")
+        configured = dict(provider)
+        configured.setdefault("label", provider_id)
+        configured.setdefault("scopes", "openid profile email")
+        configured.setdefault("username_claim", "preferred_username")
+        configured.setdefault("token_endpoint_auth_method", "client_secret_basic")
+        validated[provider_id] = configured
+    return validated
+
+
+def _cleanup_oidc_transactions() -> None:
+    cutoff = time.time() - OIDC_TRANSACTION_TTL_SECONDS
+    expired = [key for key, transaction in _oidc_transactions.items() if transaction.created_at < cutoff]
+    for transaction_id in expired:
+        transaction = _oidc_transactions.pop(transaction_id)
+        _oidc_states.pop(transaction.state, None)
+
+
+def _oidc_callback_url(handler: APIHandler) -> str:
+    configured = os.environ.get("JUPYTER_DREMIO_OIDC_REDIRECT_URI", "").strip()
+    if configured:
+        return configured
+    callback_path = handler.request.path.rsplit("/", 1)[0] + "/callback"
+    return f"{handler.request.protocol}://{handler.request.host}{callback_path}"
+
+
+def _validate_oidc_dremio_url(dremio_url: str, provider: dict[str, Any]) -> None:
+    allowed = provider.get("dremio_urls")
+    if allowed is None:
+        allowed = os.environ.get("JUPYTER_DREMIO_ALLOWED_URLS", "")
+    if isinstance(allowed, str):
+        allowed = [value.strip() for value in allowed.split(",") if value.strip()]
+    if not isinstance(allowed, list) or not allowed:
+        raise web.HTTPError(
+            500,
+            "OIDC requires an administrator-configured dremio_urls allowlist",
+        )
+    normalized = {str(value).rstrip("/") for value in allowed}
+    if dremio_url not in normalized:
+        raise web.HTTPError(403, "This Dremio URL is not allowed for the selected OIDC provider")
 
 
 class LoginHandler(APIHandler):
@@ -95,7 +235,293 @@ class CloudLoginHandler(APIHandler):
         self.finish({"token": token})
 
 
+class OidcProvidersHandler(APIHandler):
+    @web.authenticated
+    def get(self):
+        providers = _oidc_providers()
+        self.finish({
+            "providers": [
+                {"id": provider_id, "label": str(provider["label"])}
+                for provider_id, provider in providers.items()
+            ]
+        })
+
+
+class OidcStartHandler(APIHandler):
+    @web.authenticated
+    def post(self):
+        _cleanup_oidc_transactions()
+        dremio_url = _dremio_url(self)
+        try:
+            body = json.loads(self.request.body or b"{}")
+        except json.JSONDecodeError as exc:
+            raise web.HTTPError(400, "Invalid JSON request body") from exc
+
+        provider_id = body.get("provider", "default")
+        provider = _oidc_providers().get(provider_id)
+        if provider is None:
+            raise web.HTTPError(400, f"OIDC provider '{provider_id}' is not configured")
+        _validate_oidc_dremio_url(dremio_url, provider)
+
+        issuer = str(provider["issuer"]).rstrip("/")
+        if not issuer.startswith("https://") and os.environ.get(
+            "JUPYTER_DREMIO_OIDC_ALLOW_INSECURE_HTTP"
+        ) != "1":
+            raise web.HTTPError(500, "OIDC issuer must use HTTPS")
+
+        try:
+            discovery_response = requests.get(
+                f"{issuer}/.well-known/openid-configuration", timeout=15
+            )
+        except requests.RequestException as exc:
+            raise web.HTTPError(503, f"Cannot reach the OIDC provider: {exc}") from exc
+        if not discovery_response.ok:
+            raise web.HTTPError(
+                502, f"OIDC discovery failed ({discovery_response.status_code})"
+            )
+        discovery = discovery_response.json()
+        if str(discovery.get("issuer", "")).rstrip("/") != issuer:
+            raise web.HTTPError(502, "OIDC discovery returned an unexpected issuer")
+        for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            if not discovery.get(field):
+                raise web.HTTPError(502, f"OIDC discovery response is missing {field}")
+
+        transaction_id = secrets.token_urlsafe(24)
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        code_verifier = secrets.token_urlsafe(64)
+        redirect_uri = _oidc_callback_url(self)
+        transaction = OidcTransaction(
+            transaction_id=transaction_id,
+            state=state,
+            nonce=nonce,
+            code_verifier=code_verifier,
+            redirect_uri=redirect_uri,
+            dremio_url=dremio_url,
+            owner=_owner(self),
+            provider=provider,
+            discovery=discovery,
+            created_at=time.time(),
+        )
+        _oidc_transactions[transaction_id] = transaction
+        _oidc_states[state] = transaction_id
+
+        scopes = provider.get("scopes", "openid profile email")
+        if isinstance(scopes, list):
+            scopes = " ".join(str(scope) for scope in scopes)
+        parameters: dict[str, Any] = {
+            "response_type": "code",
+            "client_id": provider["client_id"],
+            "redirect_uri": redirect_uri,
+            "scope": scopes,
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": _b64url_sha256(code_verifier),
+            "code_challenge_method": "S256",
+        }
+        extra_parameters = provider.get("authorization_params", {})
+        if isinstance(extra_parameters, dict):
+            reserved = set(parameters)
+            parameters.update({
+                str(key): str(value)
+                for key, value in extra_parameters.items()
+                if str(key) not in reserved
+            })
+        authorization_url = (
+            f"{discovery['authorization_endpoint']}?{urllib.parse.urlencode(parameters)}"
+        )
+        self.finish({"authorizationUrl": authorization_url, "transactionId": transaction_id})
+
+
+class OidcCallbackHandler(APIHandler):
+    @web.authenticated
+    def get(self):
+        _cleanup_oidc_transactions()
+        state = self.get_query_argument("state", default="")
+        transaction_id = _oidc_states.pop(state, None)
+        transaction = _oidc_transactions.get(transaction_id or "")
+        if transaction is None or not secrets.compare_digest(transaction.state, state):
+            raise web.HTTPError(400, "Unknown or expired OIDC state")
+        if transaction.owner != _owner(self):
+            transaction.error = "OIDC callback belongs to a different Jupyter user"
+            raise web.HTTPError(403, transaction.error)
+
+        provider_error = self.get_query_argument("error", default="")
+        if provider_error:
+            description = self.get_query_argument("error_description", default=provider_error)
+            transaction.error = f"Identity provider rejected sign-in: {description}"
+            self._finish_page(transaction.error)
+            return
+
+        code = self.get_query_argument("code", default="")
+        if not code:
+            transaction.error = "Identity provider returned no authorization code"
+            self._finish_page(transaction.error)
+            return
+
+        try:
+            token_data = self._exchange_code(transaction, code)
+            claims = self._validate_id_token(transaction, token_data)
+            external_token = token_data.get("access_token", "")
+            if external_token.count(".") != 2:
+                raise ValueError(
+                    "The provider returned an opaque access token; configure a JWT audience/scope for Dremio"
+                )
+            dremio_token = self._exchange_dremio_token(transaction, external_token)
+            username_claim = str(transaction.provider.get("username_claim"))
+            username = str(
+                claims.get(username_claim)
+                or claims.get("preferred_username")
+                or claims.get("email")
+                or claims.get("sub")
+                or "oidc-user"
+            )
+            expires_in = int(dremio_token.get("expires_in", token_data.get("expires_in", 3600)))
+            session_id = secrets.token_urlsafe(32)
+            _sso_sessions[session_id] = AuthSession(
+                token=dremio_token["access_token"],
+                scheme="Bearer",
+                dremio_url=transaction.dremio_url,
+                owner=transaction.owner,
+                username=username,
+                expires_at=time.time() + max(1, expires_in - 15),
+            )
+            transaction.session_id = session_id
+            transaction.username = username
+            self._finish_page("Sign-in complete. This window can now close.")
+        except Exception as exc:
+            transaction.error = str(exc)
+            self.log.warning("Dremio OIDC sign-in failed: %s", exc)
+            self._finish_page(f"Sign-in failed: {exc}")
+
+    def _exchange_code(self, transaction: OidcTransaction, code: str) -> dict[str, Any]:
+        provider = transaction.provider
+        data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": transaction.redirect_uri,
+            "client_id": provider["client_id"],
+            "code_verifier": transaction.code_verifier,
+        }
+        method = provider.get("token_endpoint_auth_method", "client_secret_basic")
+        client_secret = str(provider.get("client_secret", ""))
+        auth = None
+        if client_secret and method == "client_secret_basic":
+            auth = (provider["client_id"], client_secret)
+        elif client_secret and method == "client_secret_post":
+            data["client_secret"] = client_secret
+        elif method not in ("none", "client_secret_basic", "client_secret_post"):
+            raise ValueError(f"Unsupported token_endpoint_auth_method: {method}")
+        response = requests.post(
+            transaction.discovery["token_endpoint"], data=data, auth=auth, timeout=30
+        )
+        if not response.ok:
+            raise ValueError(f"OIDC token request failed ({response.status_code}): {response.text[:300]}")
+        token_data = response.json()
+        if not token_data.get("id_token") or not token_data.get("access_token"):
+            raise ValueError("OIDC token response did not contain both ID and access tokens")
+        return token_data
+
+    def _validate_id_token(
+        self, transaction: OidcTransaction, token_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            import jwt
+        except ImportError as exc:
+            raise ValueError("PyJWT is not installed on the Jupyter server") from exc
+
+        id_token = token_data["id_token"]
+        header = jwt.get_unverified_header(id_token)
+        algorithm = header.get("alg", "")
+        allowed_algorithms = transaction.provider.get("id_token_algorithms", ["RS256"])
+        if algorithm not in allowed_algorithms:
+            raise ValueError(f"OIDC ID token uses unsupported signing algorithm {algorithm!r}")
+        jwks_response = requests.get(transaction.discovery["jwks_uri"], timeout=15)
+        if not jwks_response.ok:
+            raise ValueError(f"OIDC signing keys request failed ({jwks_response.status_code})")
+        keys = jwks_response.json().get("keys", [])
+        key_data = next((key for key in keys if key.get("kid") == header.get("kid")), None)
+        if key_data is None:
+            raise ValueError("OIDC signing key was not found in the provider JWKS")
+        signing_key = jwt.PyJWK.from_dict(key_data, algorithm=algorithm).key
+        claims = jwt.decode(
+            id_token,
+            signing_key,
+            algorithms=[algorithm],
+            audience=transaction.provider["client_id"],
+            issuer=transaction.discovery["issuer"],
+            leeway=30,
+            options={"require": ["exp", "iat", "iss", "aud", "nonce"]},
+        )
+        if not secrets.compare_digest(str(claims.get("nonce", "")), transaction.nonce):
+            raise ValueError("OIDC ID token nonce did not match the login request")
+        return claims
+
+    @staticmethod
+    def _exchange_dremio_token(
+        transaction: OidcTransaction, external_token: str
+    ) -> dict[str, Any]:
+        response = requests.post(
+            f"{transaction.dremio_url}/oauth/token",
+            data={
+                "subject_token": external_token,
+                "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "scope": "dremio.all",
+            },
+            timeout=30,
+        )
+        if not response.ok:
+            raise ValueError(f"Dremio token exchange failed ({response.status_code}): {response.text[:300]}")
+        token_data = response.json()
+        if not token_data.get("access_token"):
+            raise ValueError("Dremio token exchange returned no access token")
+        return token_data
+
+    def _finish_page(self, message: str) -> None:
+        self.set_header("Content-Type", "text/html; charset=UTF-8")
+        self.finish(
+            "<!doctype html><html><head><title>Dremio SSO</title></head>"
+            f"<body><p>{html.escape(message)}</p></body></html>"
+        )
+
+
+class OidcStatusHandler(APIHandler):
+    @web.authenticated
+    def get(self, transaction_id: str):
+        _cleanup_oidc_transactions()
+        transaction = _oidc_transactions.get(transaction_id)
+        if transaction is None or transaction.owner != _owner(self):
+            raise web.HTTPError(404, "OIDC sign-in transaction not found")
+        if transaction.error:
+            _oidc_transactions.pop(transaction_id, None)
+            self.finish({"status": "error", "error": transaction.error})
+            return
+        if not transaction.session_id:
+            self.finish({"status": "pending"})
+            return
+        _oidc_transactions.pop(transaction_id, None)
+        self.finish({
+            "status": "complete",
+            "token": f"__sso__:{transaction.session_id}",
+            "userName": transaction.username,
+            "authType": "oidc",
+        })
+
+
+class FlightTokenHandler(APIHandler):
+    @web.authenticated
+    def get(self):
+        session = _dremio_token(self)
+        if session.scheme.lower() != "bearer":
+            raise web.HTTPError(400, "Flight Bearer credentials are available only for OIDC sessions")
+        self.set_header("Cache-Control", "no-store")
+        self.finish({"authorizationHeader": f"Bearer {session.token}"})
+
+
 class SsoLoginHandler(APIHandler):
+    """Authenticate with Kerberos/SPNEGO. Kept separate from generic OIDC SSO."""
+
     @web.authenticated
     def post(self):
         dremio_url = _dremio_url(self)
@@ -174,7 +600,13 @@ class SsoLoginHandler(APIHandler):
             raise web.HTTPError(502, "Kerberos auth succeeded but no Dremio token was returned.")
 
         session_id = secrets.token_hex(16)
-        _sso_sessions[session_id] = token
+        _sso_sessions[session_id] = AuthSession(
+            token=token,
+            scheme="_dremio",
+            dremio_url=dremio_url,
+            owner=_owner(self),
+            username="sso-user",
+        )
 
         # ── Step 4: resolve the username ───────────────────────────────────────
         user_name = "sso-user"
@@ -187,7 +619,13 @@ class SsoLoginHandler(APIHandler):
             d = user_resp.json()
             user_name = d.get("username") or d.get("userName") or user_name
 
-        self.finish({"token": f"__sso__:{session_id}", "userName": user_name})
+        _sso_sessions[session_id].username = user_name
+
+        self.finish({
+            "token": f"__sso__:{session_id}",
+            "userName": user_name,
+            "authType": "kerberos",
+        })
 
 
 class SsoLogoutHandler(APIHandler):
@@ -196,7 +634,9 @@ class SsoLogoutHandler(APIHandler):
         raw = self.request.headers.get("X-Dremio-Token", "")
         if raw.startswith("__sso__:"):
             session_id = raw[len("__sso__:"):]
-            _sso_sessions.pop(session_id, None)
+            session = _sso_sessions.get(session_id)
+            if session and session.owner == _owner(self):
+                _sso_sessions.pop(session_id, None)
         self.finish({})
 
 
@@ -378,7 +818,7 @@ class FolderHandler(APIHandler):
         self.finish(resp.json())
 
 
-def _resolve_uuid(dremio_url: str, token: str, item_id: str) -> str:
+def _resolve_uuid(dremio_url: str, token: Union[AuthSession, str], item_id: str) -> str:
     """Resolve a path:-prefixed sentinel to a real Dremio UUID."""
     if item_id.startswith("path:"):
         segments = item_id[5:].split("/")
@@ -529,6 +969,11 @@ def setup_handlers(web_app):
     handlers = [
         (f"{base}/dremio/login", LoginHandler),
         (f"{base}/dremio/cloud/login", CloudLoginHandler),
+        (f"{base}/dremio/oidc/providers", OidcProvidersHandler),
+        (f"{base}/dremio/oidc/start", OidcStartHandler),
+        (f"{base}/dremio/oidc/callback", OidcCallbackHandler),
+        (f"{base}/dremio/oidc/status/([^/]+)", OidcStatusHandler),
+        (f"{base}/dremio/auth/flight-token", FlightTokenHandler),
         (f"{base}/dremio/sso-login", SsoLoginHandler),
         (f"{base}/dremio/sso-logout", SsoLogoutHandler),
         (f"{base}/dremio/catalog/folder", FolderHandler),

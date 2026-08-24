@@ -37,15 +37,16 @@ A JupyterLab 4.x sidebar extension for browsing and querying the Dremio catalog.
 
 ### Authentication
 - Username + password (proxy mode and direct mode)
-- SSO / Kerberos (proxy mode only — requires `requests-kerberos` on the Jupyter server)
+- OpenID Connect SSO for Entra ID, Okta, Keycloak, Authentik, and other OIDC providers (proxy mode)
+- Kerberos / SPNEGO (proxy mode — requires `requests-kerberos` on the Jupyter server)
 - Login form remembers the Dremio URL and username between sessions (password is never stored)
 
 ## Install
 
-Download `jupyter_dremio-0.1.16-py3-none-any.whl` from the [latest release](https://github.com/blikij/jupyter-dremio/releases/latest), then run:
+Download `jupyter_dremio-0.1.17-py3-none-any.whl` from the [latest release](https://github.com/blikij/jupyter-dremio/releases/latest), then run:
 
 ```bash
-pip install jupyter_dremio-0.1.16-py3-none-any.whl
+pip install jupyter_dremio-0.1.17-py3-none-any.whl
 ```
 
 Restart JupyterLab after installation. The Dremio icon appears in the left sidebar.
@@ -57,13 +58,21 @@ See [INSTALL.md](INSTALL.md) for full installation and verification instructions
 - JupyterLab 4.x
 - Python 3.8+
 - `requests` ≥ 2.28
+- `PyJWT[crypto]` ≥ 2.8
 
 Optional:
-- `requests-kerberos` — for SSO/Kerberos login
+- `requests-kerberos` — for Kerberos/SPNEGO login
 - `adbc-driver-flightsql` + `jupysql` — used by the generated notebooks for running SQL
 - `sqlglot[rs]` — faster SQL parsing used by JupySQL (`pip install sqlglot[rs]`)
 
 ## Changelog
+
+### 0.1.17
+- Added OIDC Authorization Code + PKCE login for Entra ID, Okta, Keycloak,
+  Authentik, and other standards-compliant providers.
+- External JWTs are exchanged for short-lived Dremio OAuth tokens, retained
+  server-side behind user-bound opaque sessions, and used for REST and Flight SQL.
+- Kerberos/SPNEGO remains available as a separate login option.
 
 ### 0.1.16
 - **Edit tags** — right-click any catalog item to open a tag editor modal.

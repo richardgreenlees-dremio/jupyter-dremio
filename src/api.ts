@@ -23,6 +23,8 @@ export interface DremioCredentials {
   projectId?: string;
   /** Dremio Cloud control plane. */
   cloudRegion?: DremioCloudRegion;
+  /** Authentication mechanism used for this connection. */
+  authType?: 'password' | 'kerberos' | 'oidc' | 'cloud';
 }
 
 export type CatalogEntityType = 'CONTAINER' | 'DATASET' | 'FILE';
@@ -78,6 +80,12 @@ export interface CatalogRoot {
 export interface LoginResponse {
   token: string;
   userName: string;
+  authType?: 'password' | 'kerberos' | 'oidc';
+}
+
+export interface OidcProvider {
+  id: string;
+  label: string;
 }
 
 export interface WikiContent {
@@ -199,7 +207,7 @@ export async function login(
   return response.json();
 }
 
-/** SSO login is only available in proxy mode (requires server-side Kerberos). */
+/** Kerberos/SPNEGO login is available only through the Jupyter server proxy. */
 export async function ssoLogin(dremioUrl: string): Promise<LoginResponse> {
   const settings = ServerConnection.makeSettings();
   const fullUrl = URLExt.join(settings.baseUrl, 'dremio/sso-login');
@@ -218,14 +226,76 @@ export async function ssoLogin(dremioUrl: string): Promise<LoginResponse> {
   return response.json();
 }
 
-export async function ssoLogout(dremioUrl: string): Promise<void> {
+export async function fetchOidcProviders(): Promise<OidcProvider[]> {
+  const data = await proxyRequest('dremio/oidc/providers', { method: 'GET' });
+  return (data.providers ?? []) as OidcProvider[];
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+}
+
+/** Complete provider-neutral OIDC Authorization Code + PKCE in a popup. */
+export async function oidcLogin(
+  dremioUrl: string,
+  provider: string
+): Promise<LoginResponse> {
+  const popup = window.open('', 'jupyter-dremio-oidc', 'width=560,height=720');
+  if (!popup) throw new Error('The browser blocked the SSO sign-in window. Allow popups and retry.');
+  popup.document.title = 'Dremio SSO';
+  popup.document.body.textContent = 'Preparing secure sign-in…';
+
+  try {
+    const start = await proxyRequest('dremio/oidc/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Dremio-URL': dremioUrl },
+      body: JSON.stringify({ provider }),
+    }) as { authorizationUrl: string; transactionId: string };
+    popup.location.href = start.authorizationUrl;
+
+    for (let attempt = 0; attempt < 300; attempt++) {
+      const status = await proxyRequest(
+        `dremio/oidc/status/${encodeURIComponent(start.transactionId)}`,
+        { method: 'GET' }
+      ) as LoginResponse & { status: 'pending' | 'complete' | 'error'; error?: string };
+      if (status.status === 'complete') {
+        popup.close();
+        return status;
+      }
+      if (status.status === 'error') {
+        popup.close();
+        throw new Error(status.error ?? 'OIDC sign-in failed.');
+      }
+      if (popup.closed) throw new Error('The SSO sign-in window was closed before authentication completed.');
+      await delay(1000);
+    }
+    throw new Error('SSO sign-in timed out. Please try again.');
+  } catch (error) {
+    popup.close();
+    throw error;
+  }
+}
+
+export async function ssoLogout(creds: DremioCredentials): Promise<void> {
   const settings = ServerConnection.makeSettings();
   const fullUrl = URLExt.join(settings.baseUrl, 'dremio/sso-logout');
   await ServerConnection.makeRequest(
     fullUrl,
-    { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Dremio-URL': dremioUrl } },
+    { method: 'POST', headers: proxyHeaders(creds) },
     settings
   );
+}
+
+/** Obtain the short-lived Bearer header only when injecting it into a live kernel. */
+export async function fetchFlightAuthorizationHeader(
+  creds: DremioCredentials
+): Promise<string | null> {
+  if (creds.authType !== 'oidc') return null;
+  const data = await proxyRequest('dremio/auth/flight-token', {
+    method: 'GET',
+    headers: proxyHeaders(creds),
+  }) as { authorizationHeader?: string };
+  return data.authorizationHeader ?? null;
 }
 
 function catalogIncludeUrl(url: string, includePermissions: boolean): string {

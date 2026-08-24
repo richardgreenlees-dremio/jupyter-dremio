@@ -121,6 +121,51 @@
   font-style: italic;
 }
 
+.dremio-oidc-help {
+  position: relative;
+}
+
+.dremio-oidc-help-trigger {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--jp-ui-font-color2, #888);
+  font: italic 0.85em/1.4 var(--jp-ui-font-family, sans-serif);
+  text-align: left;
+  cursor: help;
+}
+
+.dremio-oidc-help-trigger:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--jp-brand-color1, #1976d2);
+  outline-offset: 2px;
+}
+
+.dremio-oidc-help-tooltip {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 5px);
+  left: 0;
+  display: none;
+  width: min(280px, calc(100vw - 40px));
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid var(--jp-border-color1, #d0d0d0);
+  border-radius: 4px;
+  background: var(--jp-layout-color0, #fff);
+  box-shadow: var(--jp-elevation-z4, 0 3px 8px rgba(0, 0, 0, 0.2));
+  color: var(--jp-ui-font-color1, #333);
+  font-size: 0.85em;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.dremio-oidc-help:hover .dremio-oidc-help-tooltip,
+.dremio-oidc-help:focus-within .dremio-oidc-help-tooltip,
+.dremio-oidc-help--open .dremio-oidc-help-tooltip {
+  display: block;
+}
+
 /* ── Toolbar ──────────────────────────────────────────────────────────────── */
 
 .dremio-toolbar {

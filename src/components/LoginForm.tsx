@@ -1,11 +1,12 @@
 import * as React from 'react';
-import { useState } from 'react';
-import { DremioCloudRegion, DremioEnvironment } from '../api';
+import { useEffect, useState } from 'react';
+import { DremioCloudRegion, DremioEnvironment, fetchOidcProviders, OidcProvider } from '../api';
 
 interface Props {
-  onLogin: (url: string, username: string, password: string, useTls: boolean) => void;
-  onSsoLogin: (url: string, useTls: boolean) => void;
-  onCloudLogin: (environment: 'cloud-gen1' | 'cloud-gen2', projectId: string, token: string, region: DremioCloudRegion) => void;
+  onLogin: (url: string, username: string, password: string, useTls: boolean) => Promise<void>;
+  onOidcLogin: (url: string, provider: string, useTls: boolean) => Promise<void>;
+  onKerberosLogin: (url: string, useTls: boolean) => Promise<void>;
+  onCloudLogin: (environment: 'cloud-gen1' | 'cloud-gen2', projectId: string, token: string, region: DremioCloudRegion) => Promise<void>;
   error: string | null;
   direct: boolean;
 }
@@ -24,7 +25,7 @@ function persist(key: string, value: string): void {
   try { localStorage.setItem(key, value); } catch { /* ignore */ }
 }
 
-export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: Props): JSX.Element {
+export function LoginForm({ onLogin, onOidcLogin, onKerberosLogin, onCloudLogin, error, direct }: Props): JSX.Element {
   const [url, setUrl]       = useState(() => saved(LS_URL));
   const [environment, setEnvironment] = useState<DremioEnvironment>(
     () => (saved(LS_ENVIRONMENT) as DremioEnvironment) || 'software'
@@ -37,9 +38,24 @@ export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: 
   const [username, setUsername] = useState(() => saved(LS_USERNAME));
   const [password, setPassword] = useState('');
   const [showCredentials, setShowCredentials] = useState(direct);
+  const [oidcProviders, setOidcProviders] = useState<OidcProvider[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState('');
+  const [providerError, setProviderError] = useState<string | null>(null);
+  const [showOidcHelp, setShowOidcHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [useTls, setUseTls] = useState(true);
   const isCloud = environment !== 'software';
+
+  useEffect(() => {
+    if (direct) return;
+    fetchOidcProviders()
+      .then(providers => {
+        setOidcProviders(providers);
+        setSelectedProvider(current => current || providers[0]?.id || '');
+        setProviderError(null);
+      })
+      .catch(e => setProviderError(e instanceof Error ? e.message : String(e)));
+  }, [direct]);
 
   const handleEnvironmentChange = (value: DremioEnvironment) => {
     setEnvironment(value);
@@ -53,20 +69,34 @@ export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: 
     persist(LS_PROJECT_ID, projectId.trim());
     setBusy(true);
     try {
-      onCloudLogin(environment, projectId.trim(), token.trim(), cloudRegion);
+      await onCloudLogin(environment, projectId.trim(), token.trim(), cloudRegion);
     } finally {
       setBusy(false);
     }
   };
 
-  const handleSso = async (e: React.FormEvent) => {
+  const cleanDremioUrl = (): string => url.trim().replace(/\/$/, '');
+
+  const handleOidc = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) return;
-    const cleanUrl = url.trim().replace(/\/$/, '');
+    if (!url.trim() || !selectedProvider) return;
+    const cleanUrl = cleanDremioUrl();
     persist(LS_URL, cleanUrl);
     setBusy(true);
     try {
-      await onSsoLogin(cleanUrl, useTls);
+      await onOidcLogin(cleanUrl, selectedProvider, useTls);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleKerberos = async () => {
+    if (!url.trim()) return;
+    const cleanUrl = cleanDremioUrl();
+    persist(LS_URL, cleanUrl);
+    setBusy(true);
+    try {
+      await onKerberosLogin(cleanUrl, useTls);
     } finally {
       setBusy(false);
     }
@@ -152,14 +182,60 @@ export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: 
       )}
 
       {!isCloud && !direct && !showCredentials && (
-        <form onSubmit={handleSso}>
+        <form onSubmit={handleOidc}>
+          {oidcProviders.length > 1 && (
+            <div className="dremio-login-field">
+              <label className="dremio-login-label">SSO provider</label>
+              <select
+                className="dremio-login-input"
+                value={selectedProvider}
+                onChange={e => setSelectedProvider(e.target.value)}
+                disabled={busy}
+              >
+                {oidcProviders.map(provider => (
+                  <option key={provider.id} value={provider.id}>{provider.label}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {oidcProviders.length > 0 && (
+            <button
+              className="dremio-login-btn dremio-login-btn--primary"
+              type="submit"
+              disabled={busy || !url.trim() || !selectedProvider}
+            >
+              {busy ? 'Connecting…' : `Sign in with ${oidcProviders.find(p => p.id === selectedProvider)?.label ?? 'SSO'}`}
+            </button>
+          )}
+          {oidcProviders.length === 0 && !providerError && (
+            <div className={`dremio-oidc-help${showOidcHelp ? ' dremio-oidc-help--open' : ''}`}>
+              <button
+                className="dremio-oidc-help-trigger"
+                type="button"
+                aria-expanded={showOidcHelp}
+                aria-describedby="dremio-oidc-help-tooltip"
+                onClick={() => setShowOidcHelp(open => !open)}
+              >
+                OIDC SSO is not configured on this Jupyter server. <span aria-hidden="true">ⓘ</span>
+              </button>
+              <div id="dremio-oidc-help-tooltip" className="dremio-oidc-help-tooltip" role="tooltip">
+                Ask your Jupyter administrator to configure <code>JUPYTER_DREMIO_OIDC_PROVIDERS</code>
+                {' '}with the provider issuer, client ID, scopes, credentials, and allowed Dremio URL.
+                They must also register the Jupyter callback URL with the identity provider. Your Dremio
+                administrator must configure a matching External Token Provider using the same issuer,
+                audience, and username claim. Restart Jupyter after changing the configuration.
+              </div>
+            </div>
+          )}
+          {providerError && <div className="dremio-login-error">Cannot load SSO providers: {providerError}</div>}
           <button
-            className="dremio-login-btn dremio-login-btn--primary"
-            type="submit"
+            className={`dremio-login-btn ${oidcProviders.length === 0 ? 'dremio-login-btn--primary' : 'dremio-login-btn--link'}`}
+            type="button"
+            onClick={() => { void handleKerberos(); }}
             disabled={busy || !url.trim()}
-            title="Requires Kerberos/SPNEGO — only works on domain-joined machines where Dremio is configured for Negotiate auth. Use username &amp; password if unsure."
+            title="Use Kerberos/SPNEGO with the Jupyter server's current Kerberos credentials."
           >
-            {busy ? 'Connecting…' : 'Log in with SSO (Kerberos)'}
+            {busy ? 'Connecting…' : 'Sign in with Kerberos'}
           </button>
           <button
             className="dremio-login-btn dremio-login-btn--link"
@@ -210,7 +286,7 @@ export function LoginForm({ onLogin, onSsoLogin, onCloudLogin, error, direct }: 
               type="button"
               onClick={() => setShowCredentials(false)}
             >
-              Use SSO instead
+              Use SSO or Kerberos instead
             </button>
           )}
         </form>

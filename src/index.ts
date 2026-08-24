@@ -13,7 +13,7 @@ import { dremioIcon } from './icons';
 import { DremioPanel } from './components/DremioPanel';
 import { WikiWidget } from './WikiWidget';
 import { JobsWidget } from './JobsWidget';
-import { DremioCredentials, CatalogItem, buildSqlPath, submitSql } from './api';
+import { DremioCredentials, CatalogItem, buildSqlPath, submitSql, fetchFlightAuthorizationHeader } from './api';
 import { CellRunTracker, isDremioSqlCell } from './cellJobStatus';
 import {
   PartitionSetting,
@@ -402,28 +402,38 @@ const plugin: JupyterFrontEndPlugin<void> = {
     const newNotebook = async (creds: DremioCredentials, selectedItem: CatalogItem | null) => {
       const hostname = new URL(creds.url).hostname;
       const flightUrl = `${creds.useTls ? 'grpc+tls' : 'grpc+tcp'}://${hostname}:32010`;
+      let flightAuthorizationHeader: string | null = null;
+      try {
+        flightAuthorizationHeader = await fetchFlightAuthorizationHeader(creds);
+      } catch (error) {
+        window.alert(`Cannot prepare Dremio Flight credentials: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
 
       // Escape any double-quotes or backslashes that appear in credentials.
       const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
       let code: string;
 
-      // Both username and password are injected silently into the kernel (see below).
-      // The notebook cell reads them from os.environ so nothing sensitive is stored
-      // on disk — the same .ipynb can be shared with any user unchanged.
+      // Credentials are injected silently into the kernel (see below). OIDC uses
+      // a short-lived Bearer header; password sessions keep the existing fields.
       code =
         `from adbc_driver_flightsql import dbapi\n` +
+        `from adbc_driver_manager import DatabaseOptions\n` +
         `import os, pandas as pd\n` +
         `\n` +
         `# Credentials were injected into this kernel at notebook creation.\n` +
         `# Re-open via the Dremio sidebar button if the kernel restarts.\n` +
+        `dremio_db_kwargs = {"adbc.flight.sql.rpc.with_cookie_middleware": "true"}\n` +
+        `if os.environ.get("_DREMIO_AUTHORIZATION_HEADER"):\n` +
+        `    dremio_db_kwargs[DatabaseOptions.AUTHORIZATION_HEADER.value] = os.environ["_DREMIO_AUTHORIZATION_HEADER"]\n` +
+        `else:\n` +
+        `    dremio_db_kwargs["username"] = os.environ.get("_DREMIO_USER", "")\n` +
+        `    dremio_db_kwargs["password"] = os.environ.get("_DREMIO_PWD", "")\n` +
+        `\n` +
         `dremio_conn = dbapi.connect(\n` +
         `    os.environ.get("_DREMIO_FLIGHT_URL", ""),\n` +
-        `    db_kwargs={\n` +
-        `        "username": os.environ.get("_DREMIO_USER", ""),\n` +
-        `        "password": os.environ.get("_DREMIO_PWD", ""),\n` +
-        `        "adbc.flight.sql.rpc.with_cookie_middleware": "true",\n` +
-        `    },\n` +
+        `    db_kwargs=dremio_db_kwargs,\n` +
         `    autocommit=True,\n` +
         `)\n` +
         `\n` +
@@ -514,14 +524,15 @@ const plugin: JupyterFrontEndPlugin<void> = {
         metadata: {},
       });
 
-      // Silently inject username + password into the kernel as environment variables.
+      // Silently inject credentials into the kernel as environment variables.
       // silent:true means no output, no history entry — never visible in the notebook.
       // The setup cell reads them back via os.environ.get("_DREMIO_USER/PWD").
       const kernel = panel.sessionContext.session?.kernel;
-      if (kernel && (creds.username || creds.password)) {
+      if (kernel && (creds.username || creds.password || flightAuthorizationHeader)) {
         const injections: string[] = ['import os'];
         if (creds.username) injections.push(`os.environ["_DREMIO_USER"] = "${esc(creds.username)}"`);
         if (creds.password) injections.push(`os.environ["_DREMIO_PWD"] = "${esc(creds.password)}"`);
+        if (flightAuthorizationHeader) injections.push(`os.environ["_DREMIO_AUTHORIZATION_HEADER"] = "${esc(flightAuthorizationHeader)}"`);
         if (flightUrl) injections.push(`os.environ["_DREMIO_FLIGHT_URL"] = "${esc(flightUrl)}"`);
         kernel.requestExecute({
           code: injections.join('; '),

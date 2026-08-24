@@ -317,9 +317,56 @@ pip install dist/jupyter_dremio-0.1.0-py3-none-any.whl
 
 ---
 
-## SSO / Windows Active Directory login
+## OpenID Connect SSO
 
-The sidebar panel shows a **Log in with SSO** button as the primary login option. Clicking it authenticates through Kerberos/SPNEGO — the same mechanism used by Windows Integrated Authentication — so users in an Active Directory domain are connected without entering a username or password.
+The plugin supports any provider that implements OpenID Connect Authorization Code Flow with PKCE, including Microsoft Entra ID, Okta, Keycloak, and Authentik. The Jupyter server obtains an external JWT and exchanges it through Dremio Software's configured **External Token Provider** at `/oauth/token`.
+
+Configure one or more named providers in the Jupyter server environment. Secrets must be supplied by the administrator, never entered in the sidebar:
+
+```powershell
+$env:JUPYTER_DREMIO_OIDC_PROVIDERS = @'
+{
+  "entra": {
+    "label": "Microsoft Entra ID",
+    "issuer": "https://login.microsoftonline.com/TENANT_ID/v2.0",
+    "client_id": "CLIENT_ID",
+    "client_secret": "CLIENT_SECRET",
+    "scopes": "openid profile email api://DREMIO_APP_ID/dremio",
+    "username_claim": "preferred_username",
+    "dremio_urls": ["https://dremio.example.com"]
+  },
+  "okta": {
+    "label": "Okta",
+    "issuer": "https://example.okta.com/oauth2/default",
+    "client_id": "CLIENT_ID",
+    "client_secret": "CLIENT_SECRET",
+    "scopes": "openid profile email dremio",
+    "username_claim": "preferred_username",
+    "dremio_urls": ["https://dremio.example.com"]
+  }
+}
+'@
+```
+
+Provider entries also accept `token_endpoint_auth_method` (`client_secret_basic`, `client_secret_post`, or `none`), `authorization_params`, and `id_token_algorithms`. The default signing algorithm is `RS256`. Public clients may omit `client_secret` and select `none`. Every provider requires a `dremio_urls` allowlist; this prevents an external JWT from being sent to a user-selected server. A shared comma-separated `JUPYTER_DREMIO_ALLOWED_URLS` variable may be used instead.
+
+If Jupyter is behind a reverse proxy, explicitly configure the callback URL registered with every provider:
+
+```powershell
+$env:JUPYTER_DREMIO_OIDC_REDIRECT_URI = "https://jupyter.example.com/user/USER/dremio/oidc/callback"
+```
+
+The provider must issue a JWT access token whose `iss`, `aud`, and username claim match a Dremio Software External Token Provider. Console SSO configuration alone is not sufficient. The plugin validates the ID token, keeps the external and Dremio tokens server-side, and gives the browser only an opaque session handle. OIDC requires HTTPS unless `JUPYTER_DREMIO_OIDC_ALLOW_INSECURE_HTTP=1` is explicitly set for local development.
+
+Process-local sessions suit the normal one-Jupyter-server-process-per-user deployment. A deployment running multiple web workers must replace the in-memory session dictionaries with a shared TTL store before enabling OIDC.
+
+For a single provider, the shorter `JUPYTER_DREMIO_OIDC_ISSUER`, `JUPYTER_DREMIO_OIDC_CLIENT_ID`, `JUPYTER_DREMIO_OIDC_CLIENT_SECRET`, `JUPYTER_DREMIO_OIDC_SCOPES`, and `JUPYTER_DREMIO_OIDC_USERNAME_CLAIM` variables are also supported.
+
+---
+
+## Kerberos / Windows Active Directory login
+
+The separate **Sign in with Kerberos** option authenticates through Kerberos/SPNEGO, preserving Windows Integrated Authentication deployments.
 
 ### Requirements
 
@@ -335,7 +382,7 @@ The sidebar panel shows a **Log in with SSO** button as the primary login option
 
 3. **Dremio must be configured for Kerberos/SPNEGO authentication.** This is set up by the Dremio administrator in Dremio's security settings.
 
-If `requests-kerberos` is not installed, or if the Kerberos context is not available, the SSO button returns a clear error message. Users can always fall back to username/password login via the **Use username & password** toggle below the SSO button.
+If `requests-kerberos` is not installed, or if the Kerberos context is not available, the Kerberos button returns a clear error message. Users can always fall back to OIDC or username/password login.
 
 ---
 
@@ -344,7 +391,10 @@ If `requests-kerberos` is not installed, or if the Kerberos context is not avail
 | Frontend route | Dremio endpoint | Purpose |
 |----------------|-----------------|---------|
 | `POST /dremio/login` | `POST /apiv2/login` | Authenticate (username/password) |
-| `POST /dremio/sso-login` | `GET /api/v3/catalog` (Kerberos probe) | Authenticate via SSO |
+| `GET /dremio/oidc/providers` | OIDC discovery configuration | List configured OIDC providers |
+| `POST /dremio/oidc/start` | Provider authorization endpoint | Start OIDC with PKCE |
+| `GET /dremio/oidc/callback` | Provider token endpoint, then `POST /oauth/token` | Complete OIDC and Dremio token exchange |
+| `POST /dremio/sso-login` | `GET /api/v3/catalog` (Kerberos probe) | Authenticate via Kerberos |
 | `POST /dremio/sso-logout` | *(server-side session clear)* | Sign out SSO session |
 | `GET /dremio/catalog` | `GET /api/v3/catalog` | Root catalog |
 | `GET /dremio/catalog/{id}` | `GET /api/v3/catalog/{id}` | Children |

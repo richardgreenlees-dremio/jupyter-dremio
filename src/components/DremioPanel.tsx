@@ -8,6 +8,7 @@ import {
   DremioCloudRegion,
   CatalogItem,
   login,
+  oidcLogin,
   ssoLogin,
   ssoLogout,
   fetchRootCatalog,
@@ -178,7 +179,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentia
     try {
       const direct = mode === 'direct';
       const resp = await login(url, username, password, direct);
-      const c: DremioCredentials = { url, token: resp.token, direct, username: resp.userName, password, useTls };
+      const c: DremioCredentials = { url, token: resp.token, direct, username: resp.userName, password, useTls, authType: 'password' };
       setCreds(c);
       await loadRoot(c);
     } catch (e) {
@@ -186,11 +187,23 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentia
     }
   };
 
-  const handleSsoLogin = async (url: string, useTls: boolean) => {
+  const handleKerberosLogin = async (url: string, useTls: boolean) => {
     setLoginError(null);
     try {
       const resp = await ssoLogin(url);
-      const c: DremioCredentials = { url, token: resp.token, direct: false, username: resp.userName, useTls };
+      const c: DremioCredentials = { url, token: resp.token, direct: false, username: resp.userName, useTls, authType: 'kerberos' };
+      setCreds(c);
+      await loadRoot(c);
+    } catch (e) {
+      setLoginError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleOidcLogin = async (url: string, provider: string, useTls: boolean) => {
+    setLoginError(null);
+    try {
+      const resp = await oidcLogin(url, provider);
+      const c: DremioCredentials = { url, token: resp.token, direct: false, username: resp.userName, useTls, authType: 'oidc' };
       setCreds(c);
       await loadRoot(c);
     } catch (e) {
@@ -216,6 +229,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentia
         environment,
         projectId,
         cloudRegion,
+        authType: 'cloud',
       };
       setCreds(c);
       await loadRoot(c);
@@ -226,7 +240,7 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentia
 
   const handleLogout = () => {
     if (creds?.token.startsWith('__sso__')) {
-      ssoLogout(creds.url).catch(() => undefined);
+      ssoLogout(creds).catch(() => undefined);
     }
     setCreds(null);
     setRootItems([]);
@@ -295,7 +309,8 @@ export function DremioPanel({ onShowWiki, onShowJobs, onNewNotebook, onCredentia
     return (
       <LoginForm
         onLogin={handleLogin}
-        onSsoLogin={handleSsoLogin}
+        onOidcLogin={handleOidcLogin}
+        onKerberosLogin={handleKerberosLogin}
         onCloudLogin={handleCloudLogin}
         error={loginError}
         direct={mode === 'direct'}
